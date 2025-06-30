@@ -22,7 +22,8 @@ async def bcast():
         try:
             data = lidar.points_2d.to_csv(index=False, header=False)
             await ws.send(data)
-        except:
+        except Exception as e:
+            print(f"Error sending data to client: {e}")
             pass
 
 
