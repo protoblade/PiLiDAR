@@ -126,11 +126,6 @@ class Lidar:
         while self.serial_connection.is_open and (max_packages is None or loop_count <= max_packages):
             try:
                 if self.out_i == self.out_len:
-                    # send current scan via websocket
-                    # if self.cartesian_list:
-                        # points = self.cartesian_list[-1].tolist()
-                        # z_angle = self.z_angles[-1] if self.z_angles else 0
-
                     self.z_angles.append(self.z_angle)
 
                     if self.verbose:
@@ -240,29 +235,3 @@ class Lidar:
             calculated_crc = self.crc_table[(calculated_crc ^ byte) & 0xff]
 
         return calculated_crc == crc
-
-
-async def lidar_websocket_handler(websocket, path):
-    config = Config()
-    config.set_device("STL27L")
-    config.init(scan_id="_")
-
-    lidar = Lidar(config)
-
-    async def send_data(message):
-        await websocket.send(message)
-
-    thread = threading.Thread(target=lidar.read_loop_websocket, args=(send_data,))
-    thread.start()
-
-    try:
-        async for _ in websocket:
-            pass
-    finally:
-        lidar.close()
-
-if __name__ == "__main__":
-    start_server = websockets.serve(lidar_websocket_handler, "0.0.0.0", 8765)
-    asyncio.get_event_loop().run_until_complete(start_server)
-    print("WebSocket server started on ws://0.0.0.0:8765")
-    asyncio.get_event_loop().run_forever()

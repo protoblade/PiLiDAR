@@ -25,6 +25,9 @@ async def bcast():
         except Exception as e:
             print(f"Error sending data to client: {e}")
             pass
+        except websockets.exceptions.ConnectionClosed:
+            print("WebSocket connection closed, removing client.")
+            clients.remove(ws)
 
 
 def start_lidar_loop():
