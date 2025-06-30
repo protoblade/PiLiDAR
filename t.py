@@ -20,8 +20,8 @@ lidar = Lidar(config)
 async def bcast():
     for ws in clients:
         try:
-            data = lidar.points_2d.to_csv(index=False, header=False)
-            await ws.send(data)
+            csv_string = ','.join(map(str, lidar.points_2d.flatten()))
+            await ws.send(csv_string)
         except Exception as e:
             print(f"Error sending data to client: {e}")
             pass
