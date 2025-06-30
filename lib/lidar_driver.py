@@ -14,18 +14,10 @@ import numpy as np
 import serial
 
 # running from project root
-try:
-    from lib.config import Config
-    from lib.pointcloud import save_raw_scan, get_scan_dict
-    from lib.platform_utils import init_serial  # init_serial_MCU, init_pwm_MCU
 
-
-# testing from this file
-except:
-    from config import Config
-    from pointcloud import save_raw_scan, get_scan_dict
-    from platform_utils import init_serial  # init_serial_MCU, init_pwm_MCU
-
+from lib.config import Config
+from lib.pointcloud import save_raw_scan, get_scan_dict
+from lib.platform_utils import init_serial  # init_serial_MCU, init_pwm_MCU
 
 
 class Lidar:
