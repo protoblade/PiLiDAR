@@ -86,7 +86,7 @@ class Lidar:
         print("Serial connection closed.\n")
 
 
-    def read_loop(self, callback=None, max_packages=None, digits=4):
+    def read_loop(self, callback=None, max_packages=None):
         loop_count = 0
 
         while self.serial_connection.is_open and (max_packages is None or loop_count <= max_packages):
@@ -120,8 +120,7 @@ class Lidar:
             loop_count += 1
 
 
-    def read_loop_websocket(self, send_fn, max_packages=None, digits=4):
-        loop_count = 0
+    def read_loop_websocket(self, send_fn, max_packages=None):
 
         while self.serial_connection.is_open and (max_packages is None or loop_count <= max_packages):
             try:
