@@ -18,7 +18,7 @@ config.update_target_res(target_resolution)
 lidar = Lidar(config)
 
 async def bcast():
-    for ws in clients:
+    for ws in list(clients):
         try:
             csv_string = ','.join(map(str, lidar.points_2d.flatten()))
             await ws.send(csv_string)
