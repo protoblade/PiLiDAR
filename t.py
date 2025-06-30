@@ -14,7 +14,7 @@ config.update_target_res(target_resolution)
 
 
 
-lidar = Lidar(config, visualization=None)
+lidar = Lidar(config)
 
 async def bcast():
     for ws in clients:
