@@ -13,6 +13,11 @@ Speed Control on Raspberry Pi
 import numpy as np
 import serial
 
+import asyncio
+import json
+import threading
+import websockets
+
 # running from project root
 
 from lib.config import Config
@@ -115,6 +120,41 @@ class Lidar:
             loop_count += 1
 
 
+    def read_loop_websocket(self, send_fn, max_packages=None, digits=4):
+        loop_count = 0
+
+        while self.serial_connection.is_open and (max_packages is None or loop_count <= max_packages):
+            try:
+                if self.out_i == self.out_len:
+                    # send current scan via websocket
+                    if self.cartesian_list:
+                        points = self.cartesian_list[-1].tolist()
+                        z_angle = self.z_angles[-1] if self.z_angles else 0
+                        asyncio.run(send_fn(json.dumps({
+                            'z_angle': z_angle,
+                            'points': points
+                        })))
+
+                    self.z_angles.append(self.z_angle)
+
+                    if self.verbose:
+                        print("speed:", round(self.speed, 2))
+                        if self.z_angle is not None:
+                            print("z_angle:", round(self.z_angle, 2))
+
+                    self.cartesian_list.append(np.copy(self.points_2d))
+                    self.out_i = 0
+
+                self.read()
+
+            except serial.SerialException:
+                print("SerialException")
+                break
+
+            self.out_i += 1
+            loop_count += 1
+
+
     def read(self):
         # iterate through serial stream until start package is found
         while self.serial_connection.is_open:
@@ -206,36 +246,27 @@ class Lidar:
         return calculated_crc == crc
 
 
-if __name__ == "__main__":
-
-    def my_callback():
-        # print("speed:", round(lidar.speed, 2))
-        pass
-
+async def lidar_websocket_handler(websocket, path):
     config = Config()
-
-    # use LD06 or STL27L
     config.set_device("STL27L")
-
     config.init(scan_id="_")
 
     lidar = Lidar(config)
-    digits = config.get("ANGULAR_DIGITS")
+
+    async def send_data(message):
+        await websocket.send(message)
+
+    thread = threading.Thread(target=lidar.read_loop_websocket, args=(send_data,))
+    thread.start()
 
     try:
-        if lidar.serial_connection.is_open:
-            read_thread = threading.Thread(target=lidar.read_loop,
-                                               kwargs={'callback': my_callback,
-                                                       'max_packages': config.max_packages,
-                                                       'digits': digits})
-            read_thread.start()
-            read_thread.join()
+        async for _ in websocket:
+            pass
     finally:
-        print("speed:", round(lidar.speed, 2))
-
-        # Save raw_scan to pickle file
-        # raw_scan = get_scan_dict(lidar.z_angles, cartesian_list=lidar.cartesian_list)
-        # save_raw_scan(lidar.raw_path, raw_scan)
-        print("Raw scan saved.")
-
         lidar.close()
+
+if __name__ == "__main__":
+    start_server = websockets.serve(lidar_websocket_handler, "0.0.0.0", 8765)
+    asyncio.get_event_loop().run_until_complete(start_server)
+    print("WebSocket server started on ws://0.0.0.0:8765")
+    asyncio.get_event_loop().run_forever()

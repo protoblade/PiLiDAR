@@ -1,3 +1,4 @@
+import threading
 import asyncio
 import websockets
 from lib.config import Config
@@ -23,10 +24,10 @@ async def bcast():
         except:
             pass
 
-async def broadcast():
+
+def start_lidar_loop():
     try:
         lidar.read_loop(callback=bcast, max_packages=config.max_packages)
-
     except KeyboardInterrupt:
         print("KeyboardInterrupt: Stopping read loop.")
         lidar.close()
@@ -40,8 +41,12 @@ async def handler(websocket, path):
         clients.remove(websocket)
 
 async def main():
+    # Start lidar read_loop in a background thread
+    thread = threading.Thread(target=start_lidar_loop, daemon=True)
+    thread.start()
+
     async with websockets.serve(handler, '', 8765):
-        await broadcast()
+        await asyncio.Future()  # Run forever
 
 if __name__ == "__main__":
     asyncio.run(main())
