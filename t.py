@@ -40,7 +40,7 @@ async def handler(websocket, path):
         clients.remove(websocket)
 
 async def main():
-    async with websockets.serve(handler, '', config.WEBSOCKET_PORT):
+    async with websockets.serve(handler, '', 8765):
         await broadcast()
 
 if __name__ == "__main__":
