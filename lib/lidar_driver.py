@@ -121,6 +121,7 @@ class Lidar:
 
 
     def read_loop_websocket(self, send_fn, max_packages=None):
+        loop_count = 0
 
         while self.serial_connection.is_open and (max_packages is None or loop_count <= max_packages):
             try:
