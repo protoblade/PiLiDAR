@@ -127,13 +127,9 @@ class Lidar:
             try:
                 if self.out_i == self.out_len:
                     # send current scan via websocket
-                    if self.cartesian_list:
-                        points = self.cartesian_list[-1].tolist()
-                        z_angle = self.z_angles[-1] if self.z_angles else 0
-                        asyncio.run(send_fn(json.dumps({
-                            'z_angle': z_angle,
-                            'points': points
-                        })))
+                    # if self.cartesian_list:
+                        # points = self.cartesian_list[-1].tolist()
+                        # z_angle = self.z_angles[-1] if self.z_angles else 0
 
                     self.z_angles.append(self.z_angle)
 
@@ -146,7 +142,7 @@ class Lidar:
                     self.out_i = 0
 
                 self.read()
-
+                asyncio.run(send_fn())
             except serial.SerialException:
                 print("SerialException")
                 break
