@@ -24,8 +24,6 @@ async def bcast():
             if not lidar.points_2d:
                 continue
             data = lidar.points_2d.to_csv(index=False, header=False)
-
-
             await ws.send(data)
         except:
             pass
