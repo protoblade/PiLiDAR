@@ -16,7 +16,7 @@ import serial
 # running from project root
 
 from lib.config import Config
-from lib.pointcloud import save_raw_scan, get_scan_dict
+# from lib.pointcloud import save_raw_scan, get_scan_dict
 from lib.platform_utils import init_serial  # init_serial_MCU, init_pwm_MCU
 
 
@@ -219,26 +219,23 @@ if __name__ == "__main__":
 
     config.init(scan_id="_")
 
-    lidar = Lidar(config, visualization=visualization)
+    lidar = Lidar(config)
     digits = config.get("ANGULAR_DIGITS")
 
     try:
         if lidar.serial_connection.is_open:
-            if visualize:
-                lidar.read_loop(callback=my_callback, max_packages=config.max_packages, digits=digits)
-            else:
-                read_thread = threading.Thread(target=lidar.read_loop,
+            read_thread = threading.Thread(target=lidar.read_loop,
                                                kwargs={'callback': my_callback,
                                                        'max_packages': config.max_packages,
                                                        'digits': digits})
-                read_thread.start()
-                read_thread.join()
+            read_thread.start()
+            read_thread.join()
     finally:
         print("speed:", round(lidar.speed, 2))
 
         # Save raw_scan to pickle file
-        raw_scan = get_scan_dict(lidar.z_angles, cartesian_list=lidar.cartesian_list)
-        save_raw_scan(lidar.raw_path, raw_scan)
+        # raw_scan = get_scan_dict(lidar.z_angles, cartesian_list=lidar.cartesian_list)
+        # save_raw_scan(lidar.raw_path, raw_scan)
         print("Raw scan saved.")
 
         lidar.close()
