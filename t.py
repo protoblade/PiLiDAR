@@ -20,7 +20,13 @@ lidar = Lidar(config)
 async def bcast():
     for ws in clients:
         try:
-            await ws.send(lidar.points_2d.dumps())
+            # lidar.points_2d to csv
+            if not lidar.points_2d:
+                continue
+            data = lidar.points_2d.to_csv(index=False, header=False)
+
+
+            await ws.send(data)
         except:
             pass
 
