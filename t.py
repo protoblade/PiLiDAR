@@ -27,7 +27,7 @@ async def bcast():
 
 def start_lidar_loop():
     try:
-        lidar.read_loop_websocket(callback=bcast, max_packages=config.max_packages)
+        lidar.read_loop_websocket(send_fn=bcast, max_packages=config.max_packages)
     except KeyboardInterrupt:
         print("KeyboardInterrupt: Stopping read loop.")
         lidar.close()
