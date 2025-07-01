@@ -67,7 +67,8 @@ class Lidar:
         self.out_i              = 0
         self.speeds             = np.empty(self.out_len, dtype=self.dtype)
         self.timestamps         = np.empty(self.out_len, dtype=self.dtype)
-        self.points_2d          = np.empty((self.out_len * self.dlength, 3), dtype=self.dtype)  # [[x, y, l],[..
+        # Changed from points_2d to points_3d, now storing [x, y, z, luminance]
+        self.points_3d          = np.empty((self.out_len * self.dlength, 4), dtype=self.dtype)  # [[x, y, z, l],[..
 
         self.z_angles           = []
         self.cartesian_list     = []
@@ -105,10 +106,7 @@ class Lidar:
                 os.makedirs(output_dir)
 
             # Create a scan dictionary and save it
-            # Assuming z_angles are not directly collected by the lidar, but rather inferred from heading
-            # For now, we'll use a placeholder or derive it if possible.
-            # If z_angles are not available, you might need to adjust get_scan_dict or how you use it.
-            # For this example, we'll pass an empty list for z_angles if not explicitly tracked by lidar.
+            # cartesian_list now contains [x, y, z, luminance] directly
             scan_dict = get_scan_dict(z_angles=[], cartesian_list=self.full_scan_data, scan_id=f"scan_{timestamp}", sensor="STL27L")
             save_raw_scan(os.path.join(output_dir, f"scan_{timestamp}.pkl"), scan_dict)
             print(f"Data saved to scan_{timestamp}.pkl")
@@ -121,25 +119,26 @@ class Lidar:
 
         while self.serial_connection.is_open and (max_packages is None or loop_count <= max_packages):
             try:
-                if self.is_scanning: # This condition is good
-                    self.read()
-                    # Append current lidar data with heading
-                    if self.points_2d.size > 0:
-                        # Create a copy to avoid issues with points_2d being overwritten in next read
-                        current_points_batch = np.copy(self.points_2d[self.out_i*self.dlength:(self.out_i+1)*self.dlength])
+                # Reset self.out_i if it has reached the end of the preallocated buffer
+                if self.out_i >= self.out_len:
+                    self.out_i = 0
 
-                        # Add heading as a fourth column to the points
-                        points_with_heading = np.column_stack((current_points_batch, np.full(current_points_batch.shape[0], self.heading)))
-                        self.full_scan_data.extend(points_with_heading.tolist())
+                self.read() # Always read to keep the serial buffer clear
+
+                if self.is_scanning:
+                    # Append current lidar data (now 3D points) with heading
+                    if self.points_3d.size > 0:
+                        # Create a copy to avoid issues with points_3d being overwritten in next read
+                        current_points_batch = np.copy(self.points_3d[self.out_i*self.dlength:(self.out_i+1)*self.dlength])
+
+                        # full_scan_data now directly stores the [x, y, z, luminance] points
+                        self.full_scan_data.extend(current_points_batch.tolist())
 
                     # Check if 1 second of data has been collected
                     if (time.time() - self.scan_start_time) >= 1.0:
                         print(f"1 second of data collected for heading {self.heading}. Sending 'done'.")
                         asyncio.run(send_fn(f"{self.heading} done")) # Send heading + "done"
                         self.scan_start_time = time.time() # RESET START TIME FOR NEXT SEGMENT
-
-                else: # This else block is important to keep the serial buffer clear
-                    self.read() # Read data but don't store if not scanning
 
             except serial.SerialException:
                 print("SerialException")
@@ -148,56 +147,8 @@ class Lidar:
                 print(f"Error in read_loop_websocket: {e}")
                 break
 
-            self.out_i += 1
+            self.out_i += 1 # Prepare for the next iteration
             loop_count += 1
-
-
-    def read(self):
-        # iterate through serial stream until start package is found
-        while self.serial_connection.is_open:
-            data_byte = self.serial_connection.read()
-
-            if data_byte == self.start_byte:
-                # Check if the next byte is the second byte of the start sequence
-                next_byte = self.serial_connection.read()
-                if next_byte == self.dlength_byte:
-                    # If it is, read the entire package
-                    self.byte_array = self.serial_connection.read(self.package_len - 2)
-                    self.byte_array = self.start_byte + self.dlength_byte + self.byte_array
-                    break
-                else:
-                    # If it's not, discard the current byte and continue
-                    continue
-
-        # Error handling
-        if len(self.byte_array) != self.package_len:
-            if self.verbose:
-                print("[WARNING] Incomplete package:", self.byte_array)
-            self.byte_array = bytearray()
-            return
-
-        # Check if the package is valid using check_CRC8
-        if not self.check_CRC8(self.byte_array):
-            if self.verbose:
-                print("[WARNING] Invalid package:", self.byte_array)
-            # If the package is not valid, reset byte_array and continue with the next iteration
-            self.byte_array = bytearray()
-            return
-
-        # decoding updates speed, timestamp, angle_package, distance_package, luminance_package
-        self.decode(self.byte_array)
-        # convert polar to cartesian
-        x_package, z_package = self.polar2cartesian(self.angle_package, self.distance_package, self.offset)
-
-        points_package = np.column_stack((x_package, z_package, self.luminance_package)).astype(self.dtype)
-
-        # write into preallocated output arrays at current index
-        self.speeds[self.out_i] = self.speed
-        self.timestamps[self.out_i] = self.timestamp
-        self.points_2d[self.out_i*self.dlength:(self.out_i+1)*self.dlength] = points_package
-
-        # reset byte_array
-        self.byte_array = bytearray()
 
 
     def decode(self, byte_array):
@@ -223,8 +174,8 @@ class Lidar:
     def polar2cartesian(angles, distances, offset):
 
         angles = list(np.array(angles) + offset)
-        x_list = distances * -np.cos(angles) # This will be our X
-        z_list = distances * np.sin(angles) # This will be our Z (originally Y)
+        x_list = distances * -np.cos(angles) # This will be our X (local)
+        z_list = distances * np.sin(angles) # This will be our Z (local)
         return x_list, z_list
 
     def split_last_byte(self, data): # Added self as first argument
