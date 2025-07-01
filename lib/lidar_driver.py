@@ -74,10 +74,8 @@ class Lidar:
         self.cartesian_list     = []
 
         # New attributes for scan control and data collection
-        self.is_overall_scanning = False # Controls if the lidar loop is active (reading serial)
-        self.is_collecting_segment = False # Controls if data is being appended to full_scan_data
+        self.is_overall_scanning = False # Controls if the lidar should accumulate points
         self.heading            = 0 # Current heading received from client
-        self.segment_start_time = 0 # Time when current 1-second segment collection started
         self.full_scan_data     = [] # To store all collected data for one overall scan (until 'stop')
 
     def close(self):
@@ -89,26 +87,15 @@ class Lidar:
         print("Serial connection closed.\n")
 
     def start_overall_scan(self):
-        """Starts the overall scanning process (clears data, sets flag)."""
-        print("Starting overall scan (clearing previous data)...")
+        """Starts the overall data accumulation process."""
+        print("Lidar: Starting overall scan (clearing previous data)...")
         self.is_overall_scanning = True
-        self.is_collecting_segment = False # Ensure segment collection is off initially
         self.full_scan_data = [] # Clear previous data for a new full scan
 
-    def start_collecting_segment(self):
-        """Starts collecting data for a 1-second segment at the current heading."""
-        if self.is_overall_scanning:
-            print(f"Starting data collection for segment at heading {self.heading}...")
-            self.is_collecting_segment = True
-            self.segment_start_time = time.time()
-        else:
-            print("Overall scan not started. Send 'start' command first.")
-
     def stop_overall_scan(self):
-        """Stops the overall scanning process and saves all collected data."""
-        print("Stopping overall scan and saving data...")
+        """Stops the overall data accumulation and saves all collected data."""
+        print("Lidar: Stopping overall scan and saving data...")
         self.is_overall_scanning = False
-        self.is_collecting_segment = False # Ensure segment collection is off
         if self.full_scan_data:
             timestamp = int(time.time())
             # Ensure the raw_path directory exists
@@ -120,9 +107,9 @@ class Lidar:
             scan_dict = get_scan_dict(z_angles=[], cartesian_list=self.full_scan_data, scan_id=f"scan_{timestamp}", sensor="STL27L")
             # Save data to E57 format
             save_raw_scan(os.path.join(output_dir, f"scan_{timestamp}.e57"), scan_dict)
-            print(f"Data saved to scan_{timestamp}.e57")
+            print(f"Lidar: Data saved to scan_{timestamp}.e57")
         else:
-            print("No data collected to save.")
+            print("Lidar: No data collected to save.")
 
 
     def read_loop_websocket(self, send_fn, max_packages=None):
@@ -134,30 +121,22 @@ class Lidar:
                 if self.out_i >= self.out_len:
                     self.out_i = 0
 
-                # Always read to keep the serial buffer clear, regardless of scanning state
+                # Always read to keep the serial buffer clear
                 self.read()
 
-                if self.is_overall_scanning and self.is_collecting_segment:
-                    # Append current lidar data (now 3D points) with heading
+                # Only accumulate data if overall scanning is active
+                if self.is_overall_scanning:
+                    # Append current lidar data (now 3D points)
                     if self.points_3d.size > 0:
                         # Create a copy to avoid issues with points_3d being overwritten in next read
                         current_points_batch = np.copy(self.points_3d[self.out_i*self.dlength:(self.out_i+1)*self.dlength])
-
-                        # full_scan_data now directly stores the [x, y, z, luminance] points
                         self.full_scan_data.extend(current_points_batch.tolist())
 
-                    # Check if 1 second of data for the current segment has been collected
-                    if (time.time() - self.segment_start_time) >= 1.0:
-                        print(f"1 second of data collected for heading {self.heading}. Sending 'done'.")
-                        asyncio.run(send_fn(f"{self.heading} done")) # Send heading + "done"
-                        self.is_collecting_segment = False # Stop collecting for this segment
-                        # The lidar will now wait for the next heading command to call start_collecting_segment() again
-
             except serial.SerialException:
-                print("SerialException")
+                print("Lidar: SerialException")
                 break
             except Exception as e:
-                print(f"Error in read_loop_websocket: {e}")
+                print(f"Lidar: Error in read_loop_websocket: {e}")
                 break
 
             self.out_i += 1 # Prepare for the next iteration

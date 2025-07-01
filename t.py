@@ -1,10 +1,10 @@
 import threading
 import asyncio
 import websockets
-import json # Import json for parsing client messages
+import json
 from lib.config import Config
 from lib.lidar_driver import Lidar
-from lib.pointcloud import save_raw_scan, get_scan_dict # Ensure these are imported if used for saving
+from lib.pointcloud import save_raw_scan, get_scan_dict
 
 clients = set()
 
@@ -33,7 +33,8 @@ def start_lidar_loop():
     """Starts the LiDAR reading loop in a separate thread."""
     try:
         print(f"Max packages: {config.max_packages}")
-        # The read_loop_websocket now manages its own scanning state and sends "done"
+        # The read_loop_websocket continuously reads data.
+        # Data accumulation is controlled by lidar.is_overall_scanning.
         lidar.read_loop_websocket(send_fn=bcast, max_packages=config.max_packages)
     except KeyboardInterrupt:
         print("KeyboardInterrupt: Stopping read loop.")
@@ -47,8 +48,6 @@ def start_lidar_loop():
 async def handler(websocket, path=None):
     """Handles WebSocket connections and incoming messages."""
     clients.add(websocket)
-    # Initialize a flag for this specific WebSocket connection to track scanning state
-    websocket.is_scanning_active = False
     try:
         async for message in websocket:
             print(f"Received message: {message}")
@@ -60,28 +59,22 @@ async def handler(websocket, path=None):
                     if len(parts) > 1:
                         await websocket.send("Error: 'start' command does not take any arguments. Just send 'start'.")
                     else:
-                        lidar.start_overall_scan() # Call the new overall scan start
-                        websocket.is_scanning_active = True
-                        await websocket.send("Overall scan started. Send whole numbers (0-359) for heading updates to collect data for that angle.")
+                        lidar.start_overall_scan() # Start continuous data accumulation
+                        await websocket.send("Overall scan started. Send whole numbers (0-359) for heading updates.")
                 elif command == "stop":
-                    lidar.stop_overall_scan() # Call the new overall scan stop
-                    websocket.is_scanning_active = False
+                    lidar.stop_overall_scan() # Stop data accumulation and save
                     await websocket.send("Overall scan stopped and data saved.")
                 else:
                     # If not 'start' or 'stop', try to interpret as a heading
-                    if websocket.is_scanning_active:
-                        try:
-                            heading = int(message) # Attempt to convert the whole message to an integer
-                            if 0 <= heading <= 359:
-                                lidar.heading = heading
-                                lidar.start_collecting_segment() # Start collecting for this specific heading
-                                await websocket.send(f"Heading updated to: {heading}. Collecting 1 second of data.")
-                            else:
-                                await websocket.send("Error: Heading must be between 0 and 359.")
-                        except ValueError:
-                            await websocket.send("Unknown command or invalid heading format. Please send 'start', 'stop', or a whole number (0-359) for heading.")
-                    else:
-                        await websocket.send("Unknown command. Please send 'start' to begin scanning.")
+                    try:
+                        heading = int(message) # Attempt to convert the whole message to an integer
+                        if 0 <= heading <= 359:
+                            lidar.heading = heading # Update the lidar's current heading
+                            await websocket.send(f"Heading updated to: {heading}")
+                        else:
+                            await websocket.send("Error: Heading must be between 0 and 359.")
+                    except ValueError:
+                        await websocket.send("Unknown command or invalid heading format. Please send 'start', 'stop', or a whole number (0-359) for heading.")
 
             except Exception as e:
                 print(f"Error processing message: {e}")
