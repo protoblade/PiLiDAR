@@ -44,7 +44,7 @@ def start_lidar_loop():
         lidar.close()
 
 
-async def handler(websocket, path):
+async def handler(websocket, path=None): # Made 'path' argument optional
     """Handles WebSocket connections and incoming messages."""
     clients.add(websocket)
     try:
