@@ -79,6 +79,11 @@ class Lidar:
         self.heading            = 0 # Current heading received from client
         self.full_scan_data     = [] # To store all collected data for one overall scan (until 'stop')
 
+        # Statistics counters
+        self.packets_gathered = 0
+        self.packets_processed = 0
+        self.points_in_buffer = 0
+
     def close(self):
         if hasattr(self, 'pwm') and self.pwm is not None: # Check if pwm attribute exists
             self.pwm.stop()
@@ -93,6 +98,10 @@ class Lidar:
         self.is_overall_scanning = True # This means the read loop will process data
         self.is_data_collection_active = False # But data won't be collected yet
         self.full_scan_data = [] # Clear previous data for a new full scan
+        # Reset statistics
+        self.packets_gathered = 0
+        self.packets_processed = 0
+        self.points_in_buffer = 0
 
     def start_data_collection(self):
         """Starts actual data collection (appending points to full_scan_data)."""
@@ -139,6 +148,7 @@ class Lidar:
                         # Create a copy to avoid issues with points_3d being overwritten in next read
                         current_points_batch = np.copy(self.points_3d[self.out_i*self.dlength:(self.out_i+1)*self.dlength])
                         self.full_scan_data.extend(current_points_batch.tolist())
+                        self.points_in_buffer = len(self.full_scan_data) # Update points in buffer count
 
             except serial.SerialException:
                 print("Lidar: SerialException")
@@ -163,6 +173,7 @@ class Lidar:
                     # If it is, read the entire package
                     self.byte_array = self.serial_connection.read(self.package_len - 2)
                     self.byte_array = self.start_byte + self.dlength_byte + self.byte_array
+                    self.packets_gathered += 1 # Increment gathered packets
                     break
                 else:
                     # If it's not, discard the current byte and continue
@@ -182,6 +193,8 @@ class Lidar:
             # If the package is not valid, reset byte_array and continue with the next iteration
             self.byte_array = bytearray()
             return
+
+        self.packets_processed += 1 # Increment processed packets
 
         # decoding updates speed, timestamp, angle_package, distance_package, luminance_package
         self.decode(self.byte_array)
