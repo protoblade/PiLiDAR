@@ -151,6 +151,67 @@ class Lidar:
             loop_count += 1
 
 
+    def read(self):
+        # iterate through serial stream until start package is found
+        while self.serial_connection.is_open:
+            data_byte = self.serial_connection.read()
+
+            if data_byte == self.start_byte:
+                # Check if the next byte is the second byte of the start sequence
+                next_byte = self.serial_connection.read()
+                if next_byte == self.dlength_byte:
+                    # If it is, read the entire package
+                    self.byte_array = self.serial_connection.read(self.package_len - 2)
+                    self.byte_array = self.start_byte + self.dlength_byte + self.byte_array
+                    break
+                else:
+                    # If it's not, discard the current byte and continue
+                    continue
+
+        # Error handling
+        if len(self.byte_array) != self.package_len:
+            if self.verbose:
+                print("[WARNING] Incomplete package:", self.byte_array)
+            self.byte_array = bytearray()
+            return
+
+        # Check if the package is valid using check_CRC8
+        if not self.check_CRC8(self.byte_array):
+            if self.verbose:
+                print("[WARNING] Invalid package:", self.byte_array)
+            # If the package is not valid, reset byte_array and continue with the next iteration
+            self.byte_array = bytearray()
+            return
+
+        # decoding updates speed, timestamp, angle_package, distance_package, luminance_package
+        self.decode(self.byte_array)
+
+        # Convert polar to local 2D cartesian (X_local, Z_local)
+        x_local_package, z_local_package = self.polar2cartesian(self.angle_package, self.distance_package, self.offset)
+
+        # Convert local 2D (X_local, Z_local) to global 3D (X_global, Y_global, Z_global) using heading
+        heading_rad = np.deg2rad(self.heading)
+
+        # Assuming x_local is the horizontal distance in the lidar's plane
+        # and z_local is the vertical distance in the lidar's plane.
+        # The heading rotates this XZ plane around the global Y-axis.
+        x_global_package = x_local_package * np.cos(heading_rad)
+        y_global_package = x_local_package * np.sin(heading_rad)
+        z_global_package = z_local_package # Z remains Z as it's the vertical axis
+
+        # Combine into a 4-column package: [X_global, Y_global, Z_global, Luminance]
+        points_package = np.column_stack((x_global_package, y_global_package, z_global_package, self.luminance_package)).astype(self.dtype)
+
+        # write into preallocated output arrays at current index
+        self.speeds[self.out_i] = self.speed
+        self.timestamps[self.out_i] = self.timestamp
+        # Assign to points_3d
+        self.points_3d[self.out_i*self.dlength:(self.out_i+1)*self.dlength] = points_package
+
+        # reset byte_array
+        self.byte_array = bytearray()
+
+
     def decode(self, byte_array):
         # dlength = 12  # byte_array[46] & 0x1F
         self.speed = int.from_bytes(byte_array[2:4][::-1], 'big') / 360         # rotational frequency in rps
