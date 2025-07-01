@@ -44,36 +44,43 @@ def start_lidar_loop():
         lidar.close()
 
 
-async def handler(websocket, path=None): # Made 'path' argument optional
+async def handler(websocket, path=None):
     """Handles WebSocket connections and incoming messages."""
     clients.add(websocket)
+    # Initialize a flag for this specific WebSocket connection to track scanning state
+    websocket.is_scanning_active = False
     try:
         async for message in websocket:
             print(f"Received message: {message}")
             try:
-                # Expecting messages like "start 123" or "stop"
                 parts = message.split()
                 command = parts[0].lower()
 
                 if command == "start":
                     if len(parts) > 1:
+                        await websocket.send("Error: 'start' command does not take any arguments. Just send 'start'.")
+                    else:
+                        lidar.start_scan()
+                        websocket.is_scanning_active = True
+                        await websocket.send("Scan started. Send whole numbers (0-359) for heading updates.")
+                elif command == "stop":
+                    lidar.stop_scan()
+                    websocket.is_scanning_active = False
+                    await websocket.send("Scan stopped and data saved.")
+                else:
+                    # If not 'start' or 'stop', try to interpret as a heading
+                    if websocket.is_scanning_active:
                         try:
-                            heading = int(parts[1])
+                            heading = int(message) # Attempt to convert the whole message to an integer
                             if 0 <= heading <= 359:
                                 lidar.heading = heading
-                                lidar.start_scan()
-                                await websocket.send(f"Scan started for heading: {heading}")
+                                await websocket.send(f"Heading updated to: {heading}")
                             else:
                                 await websocket.send("Error: Heading must be between 0 and 359.")
                         except ValueError:
-                            await websocket.send("Error: Invalid heading format. Please send 'start <whole_number_heading>'.")
+                            await websocket.send("Unknown command or invalid heading format. Please send 'start', 'stop', or a whole number (0-359) for heading.")
                     else:
-                        await websocket.send("Error: 'start' command requires a heading. Usage: 'start <whole_number_heading>'.")
-                elif command == "stop":
-                    lidar.stop_scan()
-                    await websocket.send("Scan stopped and data saved.")
-                else:
-                    await websocket.send("Unknown command. Please use 'start <heading>' or 'stop'.")
+                        await websocket.send("Unknown command. Please send 'start' to begin scanning.")
 
             except Exception as e:
                 print(f"Error processing message: {e}")
