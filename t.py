@@ -60,13 +60,13 @@ async def handler(websocket, path=None):
                     if len(parts) > 1:
                         await websocket.send("Error: 'start' command does not take any arguments. Just send 'start'.")
                     else:
-                        lidar.start_scan()
+                        lidar.start_overall_scan() # Call the new overall scan start
                         websocket.is_scanning_active = True
-                        await websocket.send("Scan started. Send whole numbers (0-359) for heading updates.")
+                        await websocket.send("Overall scan started. Send whole numbers (0-359) for heading updates to collect data for that angle.")
                 elif command == "stop":
-                    lidar.stop_scan()
+                    lidar.stop_overall_scan() # Call the new overall scan stop
                     websocket.is_scanning_active = False
-                    await websocket.send("Scan stopped and data saved.")
+                    await websocket.send("Overall scan stopped and data saved.")
                 else:
                     # If not 'start' or 'stop', try to interpret as a heading
                     if websocket.is_scanning_active:
@@ -74,7 +74,8 @@ async def handler(websocket, path=None):
                             heading = int(message) # Attempt to convert the whole message to an integer
                             if 0 <= heading <= 359:
                                 lidar.heading = heading
-                                await websocket.send(f"Heading updated to: {heading}")
+                                lidar.start_collecting_segment() # Start collecting for this specific heading
+                                await websocket.send(f"Heading updated to: {heading}. Collecting 1 second of data.")
                             else:
                                 await websocket.send("Error: Heading must be between 0 and 359.")
                         except ValueError:

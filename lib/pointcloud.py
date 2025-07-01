@@ -95,7 +95,7 @@ def save_raw_scan(path, data):
                 # Write the point cloud data to the E57 file
                 e57.write_scan_raw(data_raw)
                 e57.close()
-                print(f"Raw scan data saved to {path}")
+                print(f"Data saved to {path}")
             else:
                 print(f"Error: Expected 4 columns (x, y, z, luminance) for E57, but got {points_data.shape[1]}.")
         else:
@@ -531,7 +531,7 @@ def save_pointcloud_threaded(pcd, output_path, ply_ascii=False, ply_compression=
         output_path (str): The path to save the file.
         ply_ascii (bool, optional): Whether to save PLY as ASCII. Defaults to False.
         ply_compression (bool, optional): Whether to compress PLY. Defaults to True.
-        csv_delimiter (str, optional): Delimiter for CSV files. Defaults to ",".
+        csv_delimiter (str, optional): Delimiter for CSV files. Defaults to ", ".
     """
     export_thread = threading.Thread(target=save_pointcloud, args=(pcd, output_path, ply_ascii, ply_compression, csv_delimiter))
     export_thread.start()
