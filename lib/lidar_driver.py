@@ -108,8 +108,9 @@ class Lidar:
             # Create a scan dictionary and save it
             # cartesian_list now contains [x, y, z, luminance] directly
             scan_dict = get_scan_dict(z_angles=[], cartesian_list=self.full_scan_data, scan_id=f"scan_{timestamp}", sensor="STL27L")
-            save_raw_scan(os.path.join(output_dir, f"scan_{timestamp}.pkl"), scan_dict)
-            print(f"Data saved to scan_{timestamp}.pkl")
+            # Save data to E57 format
+            save_raw_scan(os.path.join(output_dir, f"scan_{timestamp}.e57"), scan_dict)
+            print(f"Data saved to scan_{timestamp}.e57")
         else:
             print("No data collected to save.")
 
@@ -138,7 +139,9 @@ class Lidar:
                     if (time.time() - self.scan_start_time) >= 1.0:
                         print(f"1 second of data collected for heading {self.heading}. Sending 'done'.")
                         asyncio.run(send_fn(f"{self.heading} done")) # Send heading + "done"
-                        self.scan_start_time = time.time() # RESET START TIME FOR NEXT SEGMENT
+                        self.stop_scan() # Stop and save after one angle's data
+                        self.scan_start_time = time.time() # RESET START TIME FOR NEXT SEGMENT (if scanning resumes)
+                        self.is_scanning = False # Stop scanning until new heading command
 
             except serial.SerialException:
                 print("SerialException")

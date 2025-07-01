@@ -44,22 +44,65 @@ def get_scan_dict(z_angles, angular_list=None, cartesian_list=None, scan_id=None
             },
         "z_angles": z_angles,
         "angular": angular_list,
-        "cartesian": cartesian_list # This will now contain [x, z, luminance, heading] points
+        "cartesian": cartesian_list # This will now contain [x, y, z, luminance] points
     }
     return raw_scan
 
 def save_raw_scan(path, data):
     """
-    Saves raw scan data to a pickle file.
+    Saves raw scan data to a pickle file or E57 file based on extension.
 
     Args:
         path (str): The file path to save the data.
         data (dict): The dictionary containing the raw scan data.
     """
-    if isinstance(data, dict):
-        with open(path, "wb") as f:
-            pickle.dump(data, f)
-        print(f"Raw scan data saved to {path}")
+    # Create the directory if it does not exist
+    directory = os.path.dirname(path)
+    if directory and not os.path.exists(directory):
+        os.makedirs(directory)
+
+    ext = os.path.splitext(path)[1].lower()
+
+    if ext == ".pkl":
+        if isinstance(data, dict):
+            with open(path, "wb") as f:
+                pickle.dump(data, f)
+            print(f"Raw scan data saved to {path}")
+    elif ext == ".e57":
+        # Extract points and luminance from the cartesian data
+        if "cartesian" in data and data["cartesian"]:
+            points_data = np.array(data["cartesian"])
+
+            # Ensure points_data has 4 columns: x, y, z, luminance
+            if points_data.shape[1] == 4:
+                cartesianX = points_data[:, 0]
+                cartesianY = points_data[:, 1]
+                cartesianZ = points_data[:, 2]
+                # Luminance is typically stored as intensity in E57, or as grayscale color
+                intensity = points_data[:, 3].astype(np.float32) # Convert to float32 for intensity
+
+                # Create an E57 object with write mode
+                e57 = pye57.E57(path, mode='w')
+
+                # Prepare data for write_scan_raw
+                data_raw = {
+                    "cartesianX": cartesianX,
+                    "cartesianY": cartesianY,
+                    "cartesianZ": cartesianZ,
+                    "intensity": intensity
+                }
+
+                # Write the point cloud data to the E57 file
+                e57.write_scan_raw(data_raw)
+                e57.close()
+                print(f"Raw scan data saved to {path}")
+            else:
+                print(f"Error: Expected 4 columns (x, y, z, luminance) for E57, but got {points_data.shape[1]}.")
+        else:
+            print("No cartesian data found in the scan dictionary for E57 export.")
+    else:
+        print(f"Unsupported file extension: {ext}. Data not saved.")
+
 
 def load_raw_scan(path):
     """
@@ -147,8 +190,7 @@ def process_raw(config, save=True):
             print(f"\nIMU data loaded: {len(orientation.euler_list)} samples.")
             # TODO: use data to level the pointcloud
 
-        # The 'cartesian_list' in raw_scan now contains points in [x, z, luminance, heading] format.
-        # We need to adapt merge_2D_points to handle this new format and incorporate heading as Y.
+        # The 'cartesian_list' in raw_scan now contains points in [x, y, z, luminance] format.
         array_3D = merge_2D_points(raw_scan,
                         position_offset=(0, config.get("3D","Y_OFFSET"), 0),     # Y offset in mm
                         angle_offset=config.get("LIDAR","LIDAR_OFFSET_ANGLE"),   # small lidar rotation fix
@@ -202,7 +244,7 @@ def create_pcd_tensor(points, normals=None, colors=None, intensities=None, dista
 
 # def visualize(pcd):
 #     # Convert tensor pointcloud to legacy and visualize it
-#     legacy_pcd = pcd.to_legacy() if isinstance(pcd, o3d.t.geometry.PointCloud) else pcd
+#     legacy_pcd = pcd.to_legacy() if isinstance(pcd.t.geometry.PointCloud) else pcd
 #     o3d.visualization.draw([legacy_pcd], show_skybox=False)
 
 # def save_pointcloud(pcd, filename, ply_ascii=False):
@@ -526,76 +568,39 @@ def estimate_point_normals(pcd, radius=1, max_nn=30, center=(0,0,0)):
     pcd.orient_normals_towards_camera_location(camera_location=center)
     return pcd
 
-def merge_2D_points(raw_scan, z_step=1, ccw=False, position_offset=(0,0,0), angle_offset=0, up_vector=(0,0,1)):
+def merge_2D_points(raw_scan, position_offset=(0,0,0), angle_offset=0, up_vector=(0,0,1)):
     """
-    Merges 2D lidar scan points into a 3D point cloud, incorporating heading as the Y-axis.
+    Merges 3D lidar scan points (already in global XYZ) into a single 3D point cloud.
 
     Args:
         raw_scan (dict): The raw scan data dictionary containing 'cartesian' points
-                         in [x, z, luminance, heading] format.
-        z_step (int, optional): Step size for Z-angle (not used if z_angles provided). Defaults to 1.
-        ccw (bool, optional): Counter-clockwise rotation (not used if z_angles provided). Defaults to False.
+                         in [x, y, z, luminance] format.
         position_offset (tuple, optional): XYZ offset for the point cloud. Defaults to (0,0,0).
-        angle_offset (float, optional): Rotational offset around the lidar axis. Defaults to 0.
-        up_vector (tuple, optional): Vector representing the 'up' direction. Defaults to (0,0,1).
+        angle_offset (float, optional): Rotational offset (applied to the whole merged cloud). Defaults to 0.
+        up_vector (tuple, optional): Vector representing the 'up' direction (for whole cloud rotation). Defaults to (0,0,1).
 
     Returns:
         np.ndarray: The merged 3D point cloud as a NumPy array [X, Y, Z, Intensity].
     """
-    # The cartesian_list now contains points in [x, z, luminance, heading] format
     cartesian_list = raw_scan["cartesian"]
 
-    # Initialize result object with (X, Y, Z, intensity)
-    # X from lidar_x, Y from heading, Z from lidar_z, Intensity from lidar_luminance
-    pointcloud = np.empty((0, 4)) # Will store [X, Y, Z, Intensity]
+    # Concatenate all 3D points directly
+    # Each item in cartesian_list is a list of [x, y, z, luminance] points for a 1-second segment.
+    # We need to stack these segments.
+    if not cartesian_list:
+        return np.empty((0, 4)) # Return empty array if no data
 
-    for points_with_heading in cartesian_list:
-        # Each 'points_with_heading' is a list/array of [x, z, luminance, heading]
-        points_with_heading = np.array(points_with_heading) # Ensure it's a numpy array
+    # Convert list of lists (each inner list is a segment of points) to a single numpy array
+    pointcloud = np.vstack([np.array(segment) for segment in cartesian_list])
 
-        # Extract x, z, luminance, and heading
-        x_coords = points_with_heading[:, 0]
-        z_coords = points_with_heading[:, 1]
-        luminance = points_with_heading[:, 2]
-        headings = points_with_heading[:, 3]
+    # Apply initial position offset
+    pointcloud[:, 0] += position_offset[0]
+    pointcloud[:, 1] += position_offset[1]
+    pointcloud[:, 2] += position_offset[2]
 
-        # Map lidar's X to global X, lidar's Z to global Z.
-        # The heading (0-359 degrees) will define the Y-coordinate.
-        # We need to convert heading to a Y-coordinate.
-        # A simple linear mapping or a circular mapping based on a radius could be used.
-        # For a 360-degree scan, the Y-coordinate could represent the "unrolled" path.
-        # Let's assume a simple linear mapping for Y based on heading for now,
-        # or more accurately, use the heading to rotate the XZ plane around the Y-axis.
-
-        # For a 3D point cloud, we need X, Y, Z.
-        # Lidar gives X, Z (from its vertical mount).
-        # Phone gives heading (0-359). This heading is the rotation around the global Y-axis.
-
-        # Create initial 3D points [x, 0, z, luminance] before rotation
-        # The '0' for Y is a placeholder before applying the heading rotation.
-        current_3d_points = np.column_stack((x_coords, np.zeros_like(x_coords), z_coords, luminance))
-
-        # Apply the heading rotation to each point.
-        # The rotation is around the Y-axis (up_vector=(0,1,0) if Y is up).
-        # Since the lidar is mounted vertically, its XZ plane rotates around the Y-axis.
-        # The heading value directly corresponds to the rotation angle around the Y-axis.
-
-        # We need to apply rotation for each unique heading in the batch.
-        # Assuming all points in 'points_with_heading' share the same 'heading' value.
-        if headings.size > 0:
-            current_heading = headings[0] # Take the first heading as representative for the batch
-
-            # Rotate the XZ plane by the current_heading around the Y-axis
-            # The rotate_3D function expects points3d, rotation_degrees, translation_vector, rotation_axis
-            # Our points are [x, placeholder_y, z, luminance]
-            # We want to rotate around the global Y-axis (0,1,0)
-            rotated_points_batch = rotate_3D(
-                current_3d_points,
-                -current_heading, # Negative because positive heading might mean clockwise rotation from top view
-                translation_vector=position_offset,
-                rotation_axis=np.array((0,1,0)) # Rotate around Y-axis
-            )
-            pointcloud = np.append(pointcloud, rotated_points_batch, axis=0)
+    # Apply overall angle offset if it's a global correction
+    if angle_offset != 0:
+        pointcloud = rotate_3D(pointcloud, angle_offset, rotation_axis=np.array(up_vector))
 
     # Remove rows with NaN values
     pointcloud = remove_NaN(pointcloud)
