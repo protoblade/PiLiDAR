@@ -121,32 +121,14 @@ class Lidar:
 
         while self.serial_connection.is_open and (max_packages is None or loop_count <= max_packages):
             try:
-                if self.is_scanning:
+                if self.is_scanning: # This condition is good
                     self.read()
                     # Append current lidar data with heading
-                    # Each point in points_2d is [x, y, luminance]
-                    # We need to add the heading to each point if it's relevant for the 3D reconstruction later.
-                    # For now, we'll store the entire points_2d block along with the heading it was collected at.
-                    # This assumes points_2d is a batch of data collected over a short period.
-                    # If you need per-point heading, you'll need to modify the decode method.
-
-                    # Store the current batch of points along with the heading
-                    # This assumes self.points_2d contains the data for the current 'out_i' block.
-                    # We need to ensure that self.points_2d is correctly populated after self.read()
-                    # and that it represents the data for the current timestamp/heading.
-
-                    # For simplicity, let's assume points_2d holds the latest batch of points
-                    # and we want to associate the current heading with this batch.
-                    # The `full_scan_data` will be a list of tuples: (heading, points_batch)
-
-                    # Ensure self.points_2d is not empty before appending
                     if self.points_2d.size > 0:
                         # Create a copy to avoid issues with points_2d being overwritten in next read
                         current_points_batch = np.copy(self.points_2d[self.out_i*self.dlength:(self.out_i+1)*self.dlength])
 
-                        # Add heading as a fourth column to the points if needed for later processing
-                        # Or just store the heading with the batch. Let's add it to each point for now.
-                        # This will make each point [x, y, luminance, heading]
+                        # Add heading as a fourth column to the points
                         points_with_heading = np.column_stack((current_points_batch, np.full(current_points_batch.shape[0], self.heading)))
                         self.full_scan_data.extend(points_with_heading.tolist())
 
@@ -154,11 +136,9 @@ class Lidar:
                     if (time.time() - self.scan_start_time) >= 1.0:
                         print(f"1 second of data collected for heading {self.heading}. Sending 'done'.")
                         asyncio.run(send_fn(f"{self.heading} done")) # Send heading + "done"
-                        self.is_scanning = False # Stop scanning after 1 second
-                        self.stop_scan() # Save the data
+                        self.scan_start_time = time.time() # RESET START TIME FOR NEXT SEGMENT
 
-                # Always read to keep the buffer clear, even if not scanning
-                else:
+                else: # This else block is important to keep the serial buffer clear
                     self.read() # Read data but don't store if not scanning
 
             except serial.SerialException:
@@ -207,22 +187,8 @@ class Lidar:
         # decoding updates speed, timestamp, angle_package, distance_package, luminance_package
         self.decode(self.byte_array)
         # convert polar to cartesian
-        # The lidar is mounted vertically, collecting data in X and Z axis.
-        # Original: x_list = distances * -np.cos(angles), y_list = distances * np.sin(angles)
-        # For X and Z axis, we need to map the lidar's 2D plane (which is typically XY)
-        # to the XZ plane. Assuming 'angles' are in the horizontal plane of the lidar,
-        # and 'distances' are radial distances in that plane.
-        # If the lidar is mounted vertically, its 'XY' plane becomes 'XZ' in the global frame.
-        # So, the original X becomes X, and original Y becomes Z.
-        # The 'offset' should also be considered in this new orientation.
-
-        # Let's assume the lidar's internal X is our global X, and its internal Y is our global Z.
-        # So, x_package remains x_package, and y_package becomes z_package.
         x_package, z_package = self.polar2cartesian(self.angle_package, self.distance_package, self.offset)
 
-        # The points should be [x, z, luminance] for a 2D scan in the XZ plane.
-        # If we want 3D points, we need to consider the Y-axis (heading) separately.
-        # For now, let's keep it as [x, z, luminance] and the heading will be added in read_loop_websocket.
         points_package = np.column_stack((x_package, z_package, self.luminance_package)).astype(self.dtype)
 
         # write into preallocated output arrays at current index
@@ -255,37 +221,8 @@ class Lidar:
 
     @staticmethod
     def polar2cartesian(angles, distances, offset):
-        # The lidar is mounted vertically, collecting data in X and Z axis.
-        # Assuming angles are from the lidar's internal horizontal plane,
-        # and we want to map them to XZ in a global frame.
-        # If the lidar's 'X' is our 'X', and its 'Y' is our 'Z', then:
-        # x = distance * cos(angle)
-        # z = distance * sin(angle)
-        # The original code uses -np.cos for x and np.sin for y.
-        # Let's stick to that convention and assume the lidar's internal frame.
-        # If the lidar's 'X' axis points forward and 'Y' axis points left,
-        # and it's mounted vertically, then:
-        # Global X = Lidar X
-        # Global Z = Lidar Y
-        # Global Y = Lidar -Z (or some other axis for rotation)
-
-        # Given the user wants X and Z axis data, we'll map the lidar's polar
-        # coordinates (angle, distance) to (X, Z) in the output.
-        # Assuming 'angles' are measured from a reference in the lidar's plane.
-
-        # If the lidar is mounted vertically, and we are collecting data in X and Z:
-        # Let's assume 'angles' are measured from the X-axis in the XZ plane.
-        # X = distance * cos(angle)
-        # Z = distance * sin(angle)
-        # The original code uses -cos for X and sin for Y. Let's adapt that for XZ.
 
         angles = list(np.array(angles) + offset)
-        # Assuming X is forward/backward and Z is up/down for the vertical mount
-        # If the lidar's internal 0 degree is "forward" in its plane, and it's mounted vertically,
-        # then this "forward" could be our global X.
-        # And its 90 degree could be our global Z.
-
-        # Let's use the original calculation for x and y, and then interpret y as z.
         x_list = distances * -np.cos(angles) # This will be our X
         z_list = distances * np.sin(angles) # This will be our Z (originally Y)
         return x_list, z_list
