@@ -33,8 +33,8 @@ def start_lidar_loop():
     """Starts the LiDAR reading loop in a separate thread."""
     try:
         print(f"Max packages: {config.max_packages}")
-        # The read_loop_websocket continuously reads data.
-        # Data accumulation is controlled by lidar.is_overall_scanning.
+        # The read_loop_websocket continuously reads data from the LiDAR.
+        # Data accumulation (saving) is controlled by lidar.is_data_collection_active.
         lidar.read_loop_websocket(send_fn=bcast, max_packages=config.max_packages)
     except KeyboardInterrupt:
         print("KeyboardInterrupt: Stopping read loop.")
@@ -59,8 +59,9 @@ async def handler(websocket, path=None):
                     if len(parts) > 1:
                         await websocket.send("Error: 'start' command does not take any arguments. Just send 'start'.")
                     else:
-                        lidar.start_overall_scan() # Start continuous data accumulation
-                        await websocket.send("Overall scan started. Send whole numbers (0-359) for heading updates.")
+                        # Prepare lidar for scanning, but don't start data collection yet
+                        lidar.prepare_for_scan()
+                        await websocket.send("Lidar prepared. Send first heading to start data collection.")
                 elif command == "stop":
                     lidar.stop_overall_scan() # Stop data accumulation and save
                     await websocket.send("Overall scan stopped and data saved.")
@@ -70,7 +71,12 @@ async def handler(websocket, path=None):
                         heading = int(message) # Attempt to convert the whole message to an integer
                         if 0 <= heading <= 359:
                             lidar.heading = heading # Update the lidar's current heading
-                            await websocket.send(f"Heading updated to: {heading}")
+                            # If lidar is prepared and this is the first heading, start data collection
+                            if lidar.is_overall_scanning and not lidar.is_data_collection_active:
+                                lidar.start_data_collection()
+                                await websocket.send(f"Heading updated to: {heading}. Data collection started.")
+                            else:
+                                await websocket.send(f"Heading updated to: {heading}")
                         else:
                             await websocket.send("Error: Heading must be between 0 and 359.")
                     except ValueError:

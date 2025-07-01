@@ -74,7 +74,8 @@ class Lidar:
         self.cartesian_list     = []
 
         # New attributes for scan control and data collection
-        self.is_overall_scanning = False # Controls if the lidar should accumulate points
+        self.is_overall_scanning = False # Controls if the lidar reading loop is active (always true after start_lidar_loop)
+        self.is_data_collection_active = False # Controls if data is actually appended to full_scan_data
         self.heading            = 0 # Current heading received from client
         self.full_scan_data     = [] # To store all collected data for one overall scan (until 'stop')
 
@@ -86,16 +87,23 @@ class Lidar:
         self.serial_connection.close()
         print("Serial connection closed.\n")
 
-    def start_overall_scan(self):
-        """Starts the overall data accumulation process."""
-        print("Lidar: Starting overall scan (clearing previous data)...")
-        self.is_overall_scanning = True
+    def prepare_for_scan(self):
+        """Prepares the lidar for scanning (serial reading active), but doesn't start data collection."""
+        print("Lidar: Preparing for scan (clearing previous data)...")
+        self.is_overall_scanning = True # This means the read loop will process data
+        self.is_data_collection_active = False # But data won't be collected yet
         self.full_scan_data = [] # Clear previous data for a new full scan
+
+    def start_data_collection(self):
+        """Starts actual data collection (appending points to full_scan_data)."""
+        print("Lidar: Starting data collection.")
+        self.is_data_collection_active = True
 
     def stop_overall_scan(self):
         """Stops the overall data accumulation and saves all collected data."""
         print("Lidar: Stopping overall scan and saving data...")
         self.is_overall_scanning = False
+        self.is_data_collection_active = False
         if self.full_scan_data:
             timestamp = int(time.time())
             # Ensure the raw_path directory exists
@@ -121,11 +129,11 @@ class Lidar:
                 if self.out_i >= self.out_len:
                     self.out_i = 0
 
-                # Always read to keep the serial buffer clear
+                # Always read to keep the serial buffer clear, regardless of data collection state
                 self.read()
 
-                # Only accumulate data if overall scanning is active
-                if self.is_overall_scanning:
+                # Only accumulate data if data collection is active
+                if self.is_data_collection_active:
                     # Append current lidar data (now 3D points)
                     if self.points_3d.size > 0:
                         # Create a copy to avoid issues with points_3d being overwritten in next read
