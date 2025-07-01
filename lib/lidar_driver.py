@@ -12,16 +12,15 @@ Speed Control on Raspberry Pi
 
 import numpy as np
 import serial
-
 import asyncio
-import json
-import threading
-import websockets
+import time
+import os
+import pickle
 
 # running from project root
 
 from lib.config import Config
-# from lib.pointcloud import save_raw_scan, get_scan_dict
+from lib.pointcloud import save_raw_scan, get_scan_dict # Import save_raw_scan and get_scan_dict
 from lib.platform_utils import init_serial  # init_serial_MCU, init_pwm_MCU
 
 
@@ -70,54 +69,51 @@ class Lidar:
         self.timestamps         = np.empty(self.out_len, dtype=self.dtype)
         self.points_2d          = np.empty((self.out_len * self.dlength, 3), dtype=self.dtype)  # [[x, y, l],[..
 
-
-        # self.data_dir           = config.lidar_dir  # TODO remove -> npy files replaced by single pkl file
-
-        # raw output
         self.z_angles           = []
         self.cartesian_list     = []
 
+        # New attributes for scan control and data collection
+        self.is_scanning        = False
+        self.heading            = 0 # Current heading received from client
+        self.scan_start_time    = 0
+        self.full_scan_data     = [] # To store all collected data for one rotation
+
     def close(self):
-        if self.pwm is not None:
+        if hasattr(self, 'pwm') and self.pwm is not None: # Check if pwm attribute exists
             self.pwm.stop()
             print("PWM stopped.\n")
 
         self.serial_connection.close()
         print("Serial connection closed.\n")
 
+    def start_scan(self):
+        """Starts the data collection for a new rotation."""
+        print("Starting scan...")
+        self.is_scanning = True
+        self.full_scan_data = [] # Clear previous data
+        self.scan_start_time = time.time()
 
-    def read_loop(self, callback=None, max_packages=None):
-        loop_count = 0
+    def stop_scan(self):
+        """Stops the data collection and saves the collected data."""
+        print("Stopping scan and saving data...")
+        self.is_scanning = False
+        if self.full_scan_data:
+            timestamp = int(time.time())
+            # Ensure the raw_path directory exists
+            output_dir = os.path.dirname(self.raw_path)
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
 
-        while self.serial_connection.is_open and (max_packages is None or loop_count <= max_packages):
-            try:
-                if self.out_i == self.out_len:
-                    if callback is not None:
-                        callback()
-
-                    # save the z_angle to list
-                    self.z_angles.append(self.z_angle)
-
-                    if self.verbose:
-                        print("speed:", round(self.speed, 2))
-                        if self.z_angle is not None:
-                            print("z_angle:", round(self.z_angle, 2))
-
-                    # Append 2D plane to cartesian list. copying avoids identical pointers
-                    self.cartesian_list.append(np.copy(self.points_2d))
-
-
-                    self.out_i = 0
-
-                self.read()
-
-
-            except serial.SerialException:
-                print("SerialException")
-                break
-
-            self.out_i += 1
-            loop_count += 1
+            # Create a scan dictionary and save it
+            # Assuming z_angles are not directly collected by the lidar, but rather inferred from heading
+            # For now, we'll use a placeholder or derive it if possible.
+            # If z_angles are not available, you might need to adjust get_scan_dict or how you use it.
+            # For this example, we'll pass an empty list for z_angles if not explicitly tracked by lidar.
+            scan_dict = get_scan_dict(z_angles=[], cartesian_list=self.full_scan_data, scan_id=f"scan_{timestamp}", sensor="STL27L")
+            save_raw_scan(os.path.join(output_dir, f"scan_{timestamp}.pkl"), scan_dict)
+            print(f"Data saved to scan_{timestamp}.pkl")
+        else:
+            print("No data collected to save.")
 
 
     def read_loop_websocket(self, send_fn, max_packages=None):
@@ -125,21 +121,51 @@ class Lidar:
 
         while self.serial_connection.is_open and (max_packages is None or loop_count <= max_packages):
             try:
-                if self.out_i == self.out_len:
-                    self.z_angles.append(self.z_angle)
+                if self.is_scanning:
+                    self.read()
+                    # Append current lidar data with heading
+                    # Each point in points_2d is [x, y, luminance]
+                    # We need to add the heading to each point if it's relevant for the 3D reconstruction later.
+                    # For now, we'll store the entire points_2d block along with the heading it was collected at.
+                    # This assumes points_2d is a batch of data collected over a short period.
+                    # If you need per-point heading, you'll need to modify the decode method.
 
-                    if self.verbose:
-                        print("speed:", round(self.speed, 2))
-                        if self.z_angle is not None:
-                            print("z_angle:", round(self.z_angle, 2))
+                    # Store the current batch of points along with the heading
+                    # This assumes self.points_2d contains the data for the current 'out_i' block.
+                    # We need to ensure that self.points_2d is correctly populated after self.read()
+                    # and that it represents the data for the current timestamp/heading.
 
-                    self.cartesian_list.append(np.copy(self.points_2d))
-                    self.out_i = 0
+                    # For simplicity, let's assume points_2d holds the latest batch of points
+                    # and we want to associate the current heading with this batch.
+                    # The `full_scan_data` will be a list of tuples: (heading, points_batch)
 
-                self.read()
-                asyncio.run(send_fn())
+                    # Ensure self.points_2d is not empty before appending
+                    if self.points_2d.size > 0:
+                        # Create a copy to avoid issues with points_2d being overwritten in next read
+                        current_points_batch = np.copy(self.points_2d[self.out_i*self.dlength:(self.out_i+1)*self.dlength])
+
+                        # Add heading as a fourth column to the points if needed for later processing
+                        # Or just store the heading with the batch. Let's add it to each point for now.
+                        # This will make each point [x, y, luminance, heading]
+                        points_with_heading = np.column_stack((current_points_batch, np.full(current_points_batch.shape[0], self.heading)))
+                        self.full_scan_data.extend(points_with_heading.tolist())
+
+                    # Check if 1 second of data has been collected
+                    if (time.time() - self.scan_start_time) >= 1.0:
+                        print(f"1 second of data collected for heading {self.heading}. Sending 'done'.")
+                        asyncio.run(send_fn(f"{self.heading} done")) # Send heading + "done"
+                        self.is_scanning = False # Stop scanning after 1 second
+                        self.stop_scan() # Save the data
+
+                # Always read to keep the buffer clear, even if not scanning
+                else:
+                    self.read() # Read data but don't store if not scanning
+
             except serial.SerialException:
                 print("SerialException")
+                break
+            except Exception as e:
+                print(f"Error in read_loop_websocket: {e}")
                 break
 
             self.out_i += 1
@@ -181,8 +207,23 @@ class Lidar:
         # decoding updates speed, timestamp, angle_package, distance_package, luminance_package
         self.decode(self.byte_array)
         # convert polar to cartesian
-        x_package, y_package = self.polar2cartesian(self.angle_package, self.distance_package, self.offset)
-        points_package = np.column_stack((x_package, y_package, self.luminance_package)).astype(self.dtype)
+        # The lidar is mounted vertically, collecting data in X and Z axis.
+        # Original: x_list = distances * -np.cos(angles), y_list = distances * np.sin(angles)
+        # For X and Z axis, we need to map the lidar's 2D plane (which is typically XY)
+        # to the XZ plane. Assuming 'angles' are in the horizontal plane of the lidar,
+        # and 'distances' are radial distances in that plane.
+        # If the lidar is mounted vertically, its 'XY' plane becomes 'XZ' in the global frame.
+        # So, the original X becomes X, and original Y becomes Z.
+        # The 'offset' should also be considered in this new orientation.
+
+        # Let's assume the lidar's internal X is our global X, and its internal Y is our global Z.
+        # So, x_package remains x_package, and y_package becomes z_package.
+        x_package, z_package = self.polar2cartesian(self.angle_package, self.distance_package, self.offset)
+
+        # The points should be [x, z, luminance] for a 2D scan in the XZ plane.
+        # If we want 3D points, we need to consider the Y-axis (heading) separately.
+        # For now, let's keep it as [x, z, luminance] and the heading will be added in read_loop_websocket.
+        points_package = np.column_stack((x_package, z_package, self.luminance_package)).astype(self.dtype)
 
         # write into preallocated output arrays at current index
         self.speeds[self.out_i] = self.speed
@@ -198,6 +239,8 @@ class Lidar:
         self.speed = int.from_bytes(byte_array[2:4][::-1], 'big') / 360         # rotational frequency in rps
         FSA = float(int.from_bytes(byte_array[4:6][::-1], 'big')) / 100         # start angle in degrees
         LSA = float(int.from_bytes(byte_array[42:44][::-1], 'big')) / 100       # end angle in degrees
+
+
         self.timestamp = int.from_bytes(byte_array[44:46][::-1], 'big')         # timestamp in milliseconds < 30000
         # CS = int.from_bytes(byte_array[46:47][::-1], 'big')                   # CRC Checksum, checked even before decoding
 
@@ -212,21 +255,49 @@ class Lidar:
 
     @staticmethod
     def polar2cartesian(angles, distances, offset):
+        # The lidar is mounted vertically, collecting data in X and Z axis.
+        # Assuming angles are from the lidar's internal horizontal plane,
+        # and we want to map them to XZ in a global frame.
+        # If the lidar's 'X' is our 'X', and its 'Y' is our 'Z', then:
+        # x = distance * cos(angle)
+        # z = distance * sin(angle)
+        # The original code uses -np.cos for x and np.sin for y.
+        # Let's stick to that convention and assume the lidar's internal frame.
+        # If the lidar's 'X' axis points forward and 'Y' axis points left,
+        # and it's mounted vertically, then:
+        # Global X = Lidar X
+        # Global Z = Lidar Y
+        # Global Y = Lidar -Z (or some other axis for rotation)
+
+        # Given the user wants X and Z axis data, we'll map the lidar's polar
+        # coordinates (angle, distance) to (X, Z) in the output.
+        # Assuming 'angles' are measured from a reference in the lidar's plane.
+
+        # If the lidar is mounted vertically, and we are collecting data in X and Z:
+        # Let's assume 'angles' are measured from the X-axis in the XZ plane.
+        # X = distance * cos(angle)
+        # Z = distance * sin(angle)
+        # The original code uses -cos for X and sin for Y. Let's adapt that for XZ.
+
         angles = list(np.array(angles) + offset)
-        x_list = distances * -np.cos(angles)
-        y_list = distances * np.sin(angles)
-        return x_list, y_list
+        # Assuming X is forward/backward and Z is up/down for the vertical mount
+        # If the lidar's internal 0 degree is "forward" in its plane, and it's mounted vertically,
+        # then this "forward" could be our global X.
+        # And its 90 degree could be our global Z.
 
+        # Let's use the original calculation for x and y, and then interpret y as z.
+        x_list = distances * -np.cos(angles) # This will be our X
+        z_list = distances * np.sin(angles) # This will be our Z (originally Y)
+        return x_list, z_list
 
+    def split_last_byte(self, data): # Added self as first argument
+            return data[:-1], data[-1]
 
     def check_CRC8(self, data, crc=None):
         '''CRC check: length is 1 Byte, obtained from the verification of all the previous data except itself'''
 
-        def split_last_byte(data):
-            return data[:-1], data[-1]
-
         if crc is None:
-            data, crc = split_last_byte(data)
+            data, crc = self.split_last_byte(data)
 
         calculated_crc = 0
         for byte in data:

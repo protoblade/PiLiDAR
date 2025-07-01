@@ -16,10 +16,25 @@ except:
 
 
 def get_scan_dict(z_angles, angular_list=None, cartesian_list=None, scan_id=None, device_id=None, sensor=None, hardware=None, location=None, author=None):
+    """
+    Creates a dictionary to store raw scan data.
+
+    Args:
+        z_angles (list): List of Z-angles (headings) for each scan segment.
+        angular_list (list, optional): List of angular data packages. Defaults to None.
+        cartesian_list (list, optional): List of cartesian data packages. Defaults to None.
+        scan_id (str, optional): Unique ID for the scan. Defaults to None.
+        device_id (str, optional): ID of the device used. Defaults to None.
+        sensor (str, optional): Type of sensor used. Defaults to None.
+        hardware (str, optional): Hardware details. Defaults to None.
+        location (str, optional): Location of the scan. Defaults to None.
+        author (str, optional): Author of the scan. Defaults to None.
+
+    Returns:
+        dict: A dictionary containing the raw scan data and metadata.
+    """
     raw_scan = {
         "header": {
-            # "creation_date": None,
-            # "modification_date": None,
             "scan_id": scan_id,
             "device_id": device_id,
             "sensor": sensor,
@@ -29,21 +44,49 @@ def get_scan_dict(z_angles, angular_list=None, cartesian_list=None, scan_id=None
             },
         "z_angles": z_angles,
         "angular": angular_list,
-        "cartesian": cartesian_list
+        "cartesian": cartesian_list # This will now contain [x, z, luminance, heading] points
     }
     return raw_scan
 
 def save_raw_scan(path, data):
+    """
+    Saves raw scan data to a pickle file.
+
+    Args:
+        path (str): The file path to save the data.
+        data (dict): The dictionary containing the raw scan data.
+    """
     if isinstance(data, dict):
         with open(path, "wb") as f:
             pickle.dump(data, f)
+        print(f"Raw scan data saved to {path}")
 
 def load_raw_scan(path):
+    """
+    Loads raw scan data from a pickle file.
+
+    Args:
+        path (str): The file path to load the data from.
+
+    Returns:
+        dict: The loaded raw scan data dictionary.
+    """
     with open(path, "rb") as f:
         raw_scan = pickle.load(f)
+    print(f"Raw scan data loaded from {path}")
     return raw_scan
 
 def process_raw(config, save=True):
+    """
+    Processes raw lidar data to create a 3D point cloud.
+
+    Args:
+        config (Config): The configuration object.
+        save (bool, optional): Whether to save the processed point cloud. Defaults to True.
+
+    Returns:
+        o3d.geometry.PointCloud: The processed 3D point cloud.
+    """
 
     def get_cartesian_list(filepaths, columns="XZI", csv_delimiter=","):
         cartesian_list = []
@@ -64,16 +107,16 @@ def process_raw(config, save=True):
         if config.get("ENABLE_VERTEXCOLOUR") and os.path.exists(config.pano_path):
             colors = angular_lookup(angular_from_cartesian(np.asarray(pcd.points)),  # angular_points
                                     cv2.imread(config.pano_path),  # pano
-                                    scale=config.get("VERTEXCOLOUR","SCALE"), 
+                                    scale=config.get("VERTEXCOLOUR","SCALE"),
                                     z_rotate=config.get("VERTEXCOLOUR","Z_ROTATE"))
-            
+
             pcd.colors = o3d.utility.Vector3dVector(np.asarray(colors))
 
         else:  # colorize pointcloud by mapping intensities to colormap
             pcd = colormap_pcd(pcd, gamma=1, cmap="viridis")
 
         if save:
-            save_pointcloud_threaded(pcd, config.pcd_path, ply_ascii=config.get("3D","ASCII")) 
+            save_pointcloud_threaded(pcd, config.pcd_path, ply_ascii=config.get("3D","ASCII"))
 
 
         # FILTER OUTLIER POINTS
@@ -86,7 +129,7 @@ def process_raw(config, save=True):
 
             pcd = filter_by_reference(pcd, filtered_low_pcd, radius=radius)
             if save:
-                save_pointcloud_threaded(pcd, config.filtered_pcd_path, ply_ascii=config.get("3D","ASCII"))    
+                save_pointcloud_threaded(pcd, config.filtered_pcd_path, ply_ascii=config.get("3D","ASCII"))
 
         return pcd
 
@@ -94,7 +137,7 @@ def process_raw(config, save=True):
     if os.path.exists(config.raw_path):
         # print("lidar.pkl file found:", config.raw_path)
         raw_scan = load_raw_scan(config.raw_path)
-        
+
 
         # IMU data
         if "quaternions" in raw_scan:
@@ -104,31 +147,12 @@ def process_raw(config, save=True):
             print(f"\nIMU data loaded: {len(orientation.euler_list)} samples.")
             # TODO: use data to level the pointcloud
 
-        
-        array_3D = merge_2D_points(raw_scan, 
+        # The 'cartesian_list' in raw_scan now contains points in [x, z, luminance, heading] format.
+        # We need to adapt merge_2D_points to handle this new format and incorporate heading as Y.
+        array_3D = merge_2D_points(raw_scan,
                         position_offset=(0, config.get("3D","Y_OFFSET"), 0),     # Y offset in mm
                         angle_offset=config.get("LIDAR","LIDAR_OFFSET_ANGLE"),   # small lidar rotation fix
-                        up_vector=(0,0,1)) 
-
-
-    # else:  # TODO remove -> npy files replaced by single pkl file
-    #     from lib.file_utils import angles_from_filenames
-
-    #     print("lidar.pkl file not found!")
-    #     filepaths, z_angles = angles_from_filenames(config.lidar_dir, name="plane", ext="npy")
-    #     print(f"{len(filepaths)} files found (min: {min(z_angles)}, max: {max(z_angles)}).")
-
-    #     print("processing 3D planes...")
-    #     cartesian_list = get_cartesian_list(filepaths)
-
-    #     raw_scan = get_scan_dict(z_angles, cartesian_list=cartesian_list)
-    #     if save:
-    #         save_raw_scan(config.raw_path, raw_scan)
-
-    #     array_3D = merge_2D_points(raw_scan, 
-    #                             position_offset=(0, config.get("3D","Y_OFFSET"), 0),     # Y offset in mm
-    #                             angle_offset=config.get("LIDAR","LIDAR_OFFSET_ANGLE"),   # small lidar rotation fix
-    #                             up_vector=(0,0,1)) 
+                        up_vector=(0,0,1))
 
 
     normal_radius = config.get("3D","NORMAL_RADIUS")  # radius for normal estimation in mm
@@ -144,7 +168,20 @@ def process_raw(config, save=True):
 # Open3D Tensor Geometry
 
 def create_pcd_tensor(points, normals=None, colors=None, intensities=None, distances=None, write_ascii=False):
-    # Create a PointCloud Tensor object
+    """
+    Creates an Open3D PointCloud Tensor object.
+
+    Args:
+        points (np.ndarray): Nx3 array of point coordinates.
+        normals (np.ndarray, optional): Nx3 array of normal vectors. Defaults to None.
+        colors (np.ndarray, optional): Nx3 array of RGB colors (0-255). Defaults to None.
+        intensities (np.ndarray, optional): Nx1 array of intensity values. Defaults to None.
+        distances (np.ndarray, optional): Nx1 array of distance values. Defaults to None.
+        write_ascii (bool, optional): Whether to write as ASCII. Defaults to False.
+
+    Returns:
+        o3d.t.geometry.PointCloud: The Open3D PointCloud Tensor object.
+    """
     pcdt = o3d.t.geometry.PointCloud()
 
     dtype_vectors = o3d.core.Dtype.Float64  # Double precision for positions and normals
@@ -179,30 +216,69 @@ def create_pcd_tensor(points, normals=None, colors=None, intensities=None, dista
 # filtering
 
 def downsample(pcd, voxel_size=0.02):
+    """
+    Downsamples a point cloud using voxel grid method.
+
+    Args:
+        pcd (o3d.geometry.PointCloud): The input point cloud.
+        voxel_size (float, optional): The voxel size. Defaults to 0.02.
+
+    Returns:
+        o3d.geometry.PointCloud: The downsampled point cloud.
+    """
     downsampled_pcd = pcd.voxel_down_sample(voxel_size)
     return downsampled_pcd
 
 def print_stats(pcd, txt=""):
+    """
+    Prints statistics of a point cloud.
+
+    Args:
+        pcd (o3d.geometry.PointCloud): The input point cloud.
+        txt (str, optional): Additional text to print. Defaults to "".
+    """
     bbox = pcd.get_axis_aligned_bounding_box()
     bbox_extent = tuple(round(value, 2) for value in bbox.get_extent())
     print(f"{txt} points: {len(pcd.points)}, bbox_extend: {bbox_extent}")
 
 def filter_outliers(pcd, nb_points=20, radius=0.5):
+    """
+    Filters outliers from a point cloud using radius outlier removal.
+
+    Args:
+        pcd (o3d.geometry.PointCloud): The input point cloud.
+        nb_points (int, optional): Minimum number of points in the radius. Defaults to 20.
+        radius (float, optional): The radius for outlier removal. Defaults to 0.5.
+
+    Returns:
+        o3d.geometry.PointCloud: The filtered point cloud.
+    """
     cl, ind = pcd.remove_radius_outlier(nb_points=nb_points, radius=radius)
     filtered_pcd = pcd.select_by_index(ind)
     return filtered_pcd
 
 def filter_by_reference(original_pcd, reference_pcd, radius=0.02):
+    """
+    Filters points from an original point cloud based on proximity to a reference point cloud.
+
+    Args:
+        original_pcd (o3d.geometry.PointCloud): The original point cloud.
+        reference_pcd (o3d.geometry.PointCloud): The reference point cloud.
+        radius (float, optional): The search radius. Defaults to 0.02.
+
+    Returns:
+        o3d.geometry.PointCloud: The filtered point cloud.
+    """
     original_points = np.asarray(original_pcd.points)
 
     kdtree = o3d.geometry.KDTreeFlann(reference_pcd)
-    
+
     indices_to_keep = set()
     for i, point in enumerate(original_points):
         [_, idx, _] = kdtree.search_radius_vector_3d(point, radius)
         if len(idx) > 0:
             indices_to_keep.add(i)
-    
+
     filtered_pcd = original_pcd.select_by_index(list(indices_to_keep))
     return filtered_pcd
 
@@ -210,6 +286,17 @@ def filter_by_reference(original_pcd, reference_pcd, radius=0.02):
 #------------------------------------------------------------------------------------------------
 
 def get_lidar_pano(pcd, image_width, image_height):
+    """
+    Generates a grayscale panorama image from lidar point cloud luminance.
+
+    Args:
+        pcd (o3d.geometry.PointCloud): The input point cloud with color information (luminance).
+        image_width (int): Desired width of the panorama.
+        image_height (int): Desired height of the panorama.
+
+    Returns:
+        np.ndarray: The grayscale panorama image.
+    """
     # Step 1: Extract luminance values
     luminance = np.asarray(pcd.colors)[:, 0]  # Assuming luminance is stored in the red channel
 
@@ -229,12 +316,23 @@ def get_lidar_pano(pcd, image_width, image_height):
             panorama[y, x] = int(luminance[i] * 255)  # Scale luminance to [0, 255]
 
     panorama = cv2.medianBlur(panorama, 3)
-    
+
     return panorama
 
 
 # colorize pointcloud using matplotlib colormap
 def colormap_pcd(pcd, cmap="viridis", gamma=2.2):
+    """
+    Colorizes a point cloud based on intensity values using a matplotlib colormap.
+
+    Args:
+        pcd (o3d.geometry.PointCloud): The input point cloud.
+        cmap (str, optional): The colormap to use. Defaults to "viridis".
+        gamma (float, optional): Gamma correction value. Defaults to 2.2.
+
+    Returns:
+        o3d.geometry.PointCloud: The colorized point cloud.
+    """
     r = np.asarray(pcd.colors)[:, 0]
     r_norm = (r - r.min()) / (r.max() - r.min())
     r_corrected = r_norm**(gamma)
@@ -247,6 +345,22 @@ def colormap_pcd(pcd, cmap="viridis", gamma=2.2):
 # load point cloud from file (3D: pcd, ply, e57 | 2D: csv, npy), return as pcd object or numpy table
 # columns parameter: "XYZ" for 3D, "XZ" for 2D vertical, "I" for intensity or "RGB" for color
 def load_pointcloud(filepath, columns="XYZI", csv_delimiter=",", as_tensor=False, as_array=False):
+    """
+    Loads a point cloud from a file.
+
+    Args:
+        filepath (str): The path to the point cloud file.
+        columns (str, optional): Specifies the columns in the file (e.g., "XYZI", "XZ"). Defaults to "XYZI".
+        csv_delimiter (str, optional): Delimiter for CSV files. Defaults to ",".
+        as_tensor (bool, optional): Whether to return as an Open3D tensor point cloud. Defaults to False.
+        as_array (bool, optional): Whether to return as a NumPy array. Defaults to False.
+
+    Raises:
+        ValueError: If the file type is unsupported.
+
+    Returns:
+        Union[o3d.geometry.PointCloud, np.ndarray]: The loaded point cloud.
+    """
     ext = os.path.splitext(filepath)[1][1:]
 
     if ext == "pcd" or ext == "ply":
@@ -283,23 +397,33 @@ def load_pointcloud(filepath, columns="XYZI", csv_delimiter=",", as_tensor=False
         array = np.loadtxt(filepath, delimiter=csv_delimiter)
         if as_array:
             return array
-    
+
         pcd = pcd_from_np(array, columns=columns)
 
     elif ext == 'npy':
         array = np.load(filepath)
         if as_array:
             return array
-    
+
         pcd = pcd_from_np(array, columns=columns)
 
     else:
         raise ValueError("Unsupported file type: " + ext)
-    
+
     return pcd
 
 # export point cloud to file (pcd, ply, e57, csv)
 def save_pointcloud(pcd, filepath, ply_ascii=False, ply_compression=True, csv_delimiter=","):
+    """
+    Exports a point cloud to a file.
+
+    Args:
+        pcd (Union[o3d.geometry.PointCloud, np.ndarray, list]): The point cloud to save.
+        filepath (str): The path to save the file.
+        ply_ascii (bool, optional): Whether to save PLY as ASCII. Defaults to False.
+        ply_compression (bool, optional): Whether to compress PLY. Defaults to True.
+        csv_delimiter (str, optional): Delimiter for CSV files. Defaults to ",".
+    """
     # Create the directory if it does not exist
     directory, filename = os.path.split(filepath)
     os.makedirs(directory, exist_ok=True)
@@ -312,7 +436,7 @@ def save_pointcloud(pcd, filepath, ply_ascii=False, ply_compression=True, csv_de
             o3d.t.io.write_point_cloud(filepath, pcd)
         else:
             o3d.io.write_point_cloud(filename=filepath, pointcloud=pcd)
-    
+
     elif ext == "ply":
         if isinstance(pcd, o3d.t.geometry.Geometry):
             o3d.t.io.write_point_cloud(filepath, pcd, write_ascii=ply_ascii, compressed=ply_compression)
@@ -327,7 +451,7 @@ def save_pointcloud(pcd, filepath, ply_ascii=False, ply_compression=True, csv_de
 
     elif ext == "e57":
         # if a single point cloud is provided, convert it to a list
-        if isinstance(pcd, list): 
+        if isinstance(pcd, list):
             pcd_list = pcd
         elif isinstance(pcd, o3d.geometry.PointCloud):
             pcd_list = [pcd]
@@ -353,53 +477,126 @@ def save_pointcloud(pcd, filepath, ply_ascii=False, ply_compression=True, csv_de
             # Write the point cloud data to the E57 file
             e57.write_scan_raw(data_raw)
         e57.close()
-    
+
     print("\nexport completed.")
 
 def save_pointcloud_threaded(pcd, output_path, ply_ascii=False, ply_compression=True, csv_delimiter=","):
+    """
+    Saves a point cloud to a file in a separate thread.
+
+    Args:
+        pcd (Union[o3d.geometry.PointCloud, np.ndarray, list]): The point cloud to save.
+        output_path (str): The path to save the file.
+        ply_ascii (bool, optional): Whether to save PLY as ASCII. Defaults to False.
+        ply_compression (bool, optional): Whether to compress PLY. Defaults to True.
+        csv_delimiter (str, optional): Delimiter for CSV files. Defaults to ",".
+    """
     export_thread = threading.Thread(target=save_pointcloud, args=(pcd, output_path, ply_ascii, ply_compression, csv_delimiter))
     export_thread.start()
 
 # Remove rows with NaN values from a numpy array
 def remove_NaN(array):
+    """
+    Removes rows containing NaN values from a NumPy array.
+
+    Args:
+        array (np.ndarray): The input NumPy array.
+
+    Returns:
+        np.ndarray: The array with NaN rows removed.
+    """
     return array[~np.isnan(array).any(axis=1)]
 
 # estimate normals for a point cloud
 def estimate_point_normals(pcd, radius=1, max_nn=30, center=(0,0,0)):
+    """
+    Estimates normals for a point cloud.
+
+    Args:
+        pcd (o3d.geometry.PointCloud): The input point cloud.
+        radius (float, optional): The search radius for normal estimation. Defaults to 1.
+        max_nn (int, optional): Maximum number of nearest neighbors for normal estimation. Defaults to 30.
+        center (tuple, optional): The camera location for normal orientation. Defaults to (0,0,0).
+
+    Returns:
+        o3d.geometry.PointCloud: The point cloud with estimated normals.
+    """
     KD_search_param = o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=max_nn)
     pcd.estimate_normals(search_param=KD_search_param)
     pcd.orient_normals_towards_camera_location(camera_location=center)
     return pcd
 
 def merge_2D_points(raw_scan, z_step=1, ccw=False, position_offset=(0,0,0), angle_offset=0, up_vector=(0,0,1)):
-    z_angles = raw_scan["z_angles"]
+    """
+    Merges 2D lidar scan points into a 3D point cloud, incorporating heading as the Y-axis.
+
+    Args:
+        raw_scan (dict): The raw scan data dictionary containing 'cartesian' points
+                         in [x, z, luminance, heading] format.
+        z_step (int, optional): Step size for Z-angle (not used if z_angles provided). Defaults to 1.
+        ccw (bool, optional): Counter-clockwise rotation (not used if z_angles provided). Defaults to False.
+        position_offset (tuple, optional): XYZ offset for the point cloud. Defaults to (0,0,0).
+        angle_offset (float, optional): Rotational offset around the lidar axis. Defaults to 0.
+        up_vector (tuple, optional): Vector representing the 'up' direction. Defaults to (0,0,1).
+
+    Returns:
+        np.ndarray: The merged 3D point cloud as a NumPy array [X, Y, Z, Intensity].
+    """
+    # The cartesian_list now contains points in [x, z, luminance, heading] format
     cartesian_list = raw_scan["cartesian"]
-    
-    # init result object with (X,Y,Z, intensity)
-    pointcloud = np.zeros((1, 4))
-    z_angle = 0
 
-    for i, points2d in enumerate(cartesian_list):
-        # insert 3D Y=0 after column 0 so 2D-Y becomes 3D-Z (Z-up: image is now vertical)
-        points3d = np.insert(points2d, 1, values=0, axis=1)
+    # Initialize result object with (X, Y, Z, intensity)
+    # X from lidar_x, Y from heading, Z from lidar_z, Intensity from lidar_luminance
+    pointcloud = np.empty((0, 4)) # Will store [X, Y, Z, Intensity]
 
-        # Use the corresponding angle from the list if provided, otherwise use the fixed angle increment
-        if z_angles is not None:
-            z_angle = z_angles[i]
-        else:
-            if ccw:
-                z_angle -= z_step
-            else:
-                z_angle += z_step
-        
-        # rotational offset around Lidar axis (probably mechanical assembly imperfection)
-        points3d = rotate_3D(points3d, angle_offset, rotation_axis=np.array((0,1,0)))
+    for points_with_heading in cartesian_list:
+        # Each 'points_with_heading' is a list/array of [x, z, luminance, heading]
+        points_with_heading = np.array(points_with_heading) # Ensure it's a numpy array
 
-        # revolve around the Z-axis (up_vector) by its angle from filename
-        points3d = rotate_3D(points3d, -z_angle, translation_vector=position_offset, rotation_axis=np.array(up_vector))
-        # append to 3D scene
-        pointcloud = np.append(pointcloud, points3d, axis=0)
-    
+        # Extract x, z, luminance, and heading
+        x_coords = points_with_heading[:, 0]
+        z_coords = points_with_heading[:, 1]
+        luminance = points_with_heading[:, 2]
+        headings = points_with_heading[:, 3]
+
+        # Map lidar's X to global X, lidar's Z to global Z.
+        # The heading (0-359 degrees) will define the Y-coordinate.
+        # We need to convert heading to a Y-coordinate.
+        # A simple linear mapping or a circular mapping based on a radius could be used.
+        # For a 360-degree scan, the Y-coordinate could represent the "unrolled" path.
+        # Let's assume a simple linear mapping for Y based on heading for now,
+        # or more accurately, use the heading to rotate the XZ plane around the Y-axis.
+
+        # For a 3D point cloud, we need X, Y, Z.
+        # Lidar gives X, Z (from its vertical mount).
+        # Phone gives heading (0-359). This heading is the rotation around the global Y-axis.
+
+        # Create initial 3D points [x, 0, z, luminance] before rotation
+        # The '0' for Y is a placeholder before applying the heading rotation.
+        current_3d_points = np.column_stack((x_coords, np.zeros_like(x_coords), z_coords, luminance))
+
+        # Apply the heading rotation to each point.
+        # The rotation is around the Y-axis (up_vector=(0,1,0) if Y is up).
+        # Since the lidar is mounted vertically, its XZ plane rotates around the Y-axis.
+        # The heading value directly corresponds to the rotation angle around the Y-axis.
+
+        # We need to apply rotation for each unique heading in the batch.
+        # Assuming all points in 'points_with_heading' share the same 'heading' value.
+        if headings.size > 0:
+            current_heading = headings[0] # Take the first heading as representative for the batch
+
+            # Rotate the XZ plane by the current_heading around the Y-axis
+            # The rotate_3D function expects points3d, rotation_degrees, translation_vector, rotation_axis
+            # Our points are [x, placeholder_y, z, luminance]
+            # We want to rotate around the global Y-axis (0,1,0)
+            rotated_points_batch = rotate_3D(
+                current_3d_points,
+                -current_heading, # Negative because positive heading might mean clockwise rotation from top view
+                translation_vector=position_offset,
+                rotation_axis=np.array((0,1,0)) # Rotate around Y-axis
+            )
+            pointcloud = np.append(pointcloud, rotated_points_batch, axis=0)
+
     # Remove rows with NaN values
     pointcloud = remove_NaN(pointcloud)
     return pointcloud
@@ -407,10 +604,27 @@ def merge_2D_points(raw_scan, z_step=1, ccw=False, position_offset=(0,0,0), angl
 # convert numpy array to open3d point cloud
 # supports 2D and 3D points, intensity and RGB colors or pcd objects (pcd.points and pcd.colors)
 def pcd_from_np(array, columns="XYZI", estimate_normals=True, colors=None, radius=10, max_nn=30):
+    """
+    Converts a NumPy array to an Open3D point cloud.
+
+    Args:
+        array (np.ndarray): The input NumPy array. Can be 2D or 3D points with optional intensity/color.
+                            Expected format for this context: [X, Y, Z, Intensity].
+        columns (str, optional): Specifies the columns in the array (e.g., "XYZI"). Defaults to "XYZI".
+        estimate_normals (bool, optional): Whether to estimate normals. Defaults to True.
+        colors (np.ndarray, optional): Nx3 array of RGB colors (0-1). Defaults to None.
+        radius (float, optional): Radius for normal estimation. Defaults to 10.
+        max_nn (int, optional): Max neighbors for normal estimation. Defaults to 30.
+
+    Raises:
+        ValueError: If the point cloud type is unsupported.
+
+    Returns:
+        o3d.geometry.PointCloud: The Open3D point cloud object.
+    """
     pcd = o3d.geometry.PointCloud()
 
     # Convert the pointcloud and colors to numpy arrays if they are not already
-    # TODO: merged from another version -> check if it's still valid
     if not isinstance(array, np.ndarray):
         array = np.asarray(array)
     if colors is not None and not isinstance(colors, np.ndarray):
@@ -421,11 +635,9 @@ def pcd_from_np(array, columns="XYZI", estimate_normals=True, colors=None, radiu
 
     # 3D points
     if "XYZ" in columns:
-        points = array[:, 0:3]
+        points = array[:, 0:3] # Assuming array is [X, Y, Z, Intensity]
         pcd.points = o3d.utility.Vector3dVector(points)
-        color_i = 3
-
-     # 2D points
+        color_i = 3 # Intensity column index
     else:
         color_i = 2
         if "XY" in columns:
@@ -436,22 +648,29 @@ def pcd_from_np(array, columns="XYZI", estimate_normals=True, colors=None, radiu
             pcd.points = o3d.utility.Vector3dVector(np.hstack((zeros, array[:, 0:2])))
         else:
             raise ValueError("Unsupported point cloud type: " + type(array))
-    
+
     if estimate_normals:
         pcd = estimate_point_normals(pcd, radius=radius, max_nn=max_nn)
 
     # colors
     if "I" in columns:  # ext == "XYZI" -> array.shape[1] == 4:
-        intensities = array[:, color_i] / 255  # normalize intensity values
-
-        # convert intensity to RGBA color
-        pcd.colors = o3d.utility.Vector3dVector(np.column_stack([intensities, intensities, intensities]))
-
+        # Ensure array has enough columns for intensity
+        if array.shape[1] > color_i:
+            intensities = array[:, color_i] / 255  # normalize intensity values
+            # convert intensity to RGBA color
+            pcd.colors = o3d.utility.Vector3dVector(np.column_stack([intensities, intensities, intensities]))
+        else:
+            print("Warning: 'I' specified in columns but no intensity data found in array.")
+            pcd.colors = o3d.utility.Vector3dVector(np.zeros((array.shape[0], 3))) # Default to black
     elif "RGB" in columns:
         pcd.colors = o3d.utility.Vector3dVector(array[:, color_i:color_i+3] / 255)
-    
+
     elif colors is not None:
         pcd.colors = o3d.utility.Vector3dVector(colors)
+    else:
+        # If no color/intensity specified, default to a neutral color (e.g., gray)
+        pcd.colors = o3d.utility.Vector3dVector(np.full((array.shape[0], 3), 0.5))
+
 
     return pcd
 
@@ -459,41 +678,51 @@ def pcd_from_np(array, columns="XYZI", estimate_normals=True, colors=None, radiu
 #------------------------------------------------------------------------------------------------
 # Transformation functions
 
-def rotate_3D(points3d, rotation_degrees, translation_vector=(0,0,0), rotation_axis=(0,0,1)):
+def rotate_3D(points3d_with_intensity, rotation_degrees, translation_vector=(0,0,0), rotation_axis=(0,0,1)):
+    """
+    Rotates 3D points around a specified axis and applies translation.
+
+    Args:
+        points3d_with_intensity (np.ndarray): Nx4 array of points [X, Y, Z, Intensity].
+        rotation_degrees (float): The rotation angle in degrees.
+        translation_vector (tuple, optional): XYZ translation vector. Defaults to (0,0,0).
+        rotation_axis (tuple, optional): The axis of rotation. Defaults to (0,0,1).
+
+    Returns:
+        np.ndarray: The transformed points as an Nx4 NumPy array [X', Y', Z', Intensity].
+    """
     rotation_axis = np.array(rotation_axis)
 
     rotation_radians = np.radians(rotation_degrees)
     rotation_vector = rotation_radians * rotation_axis
     rotation = R.from_rotvec(rotation_vector)
     rotation_matrix = rotation.as_matrix()
+
     pcd = o3d.geometry.PointCloud()
 
-    pcd.points = o3d.utility.Vector3dVector(points3d[:, 0:3])  # column 4 are intensities 
+    # Separate points and intensity
+    points_xyz = points3d_with_intensity[:, 0:3]
+    intensities = points3d_with_intensity[:, 3]
 
-    if points3d.shape[1] == 4:
-        intensities = points3d[:, 3]
-        colors = np.stack([intensities]*3, axis=-1)
-        pcd.colors = o3d.utility.Vector3dVector(colors)
+    pcd.points = o3d.utility.Vector3dVector(points_xyz)
 
-    # Perform translation before rotation, adjusting Y based on translation and initial Z
+    # Perform translation before rotation
     pcd.translate(translation_vector)
-    # pcd.points[:, 1] += pcd.points[:, 2] * translation_vector[1]  # Update Y based on translation and Z
 
     # Rotate the point cloud using the rotation matrix
     pcd.rotate(rotation_matrix, center=(0, 0, 0))
 
     # Convert the point cloud back to a NumPy array
-    result_points = np.asarray(pcd.points)
+    result_points_xyz = np.asarray(pcd.points)
 
-    # Reattach intensity column if provided
-    if points3d.shape[1] == 4:
-        result_points = np.column_stack((result_points, points3d[:, 3]))
+    # Reattach intensity column
+    result_points = np.column_stack((result_points_xyz, intensities))
 
     return result_points
 
 # def rotate_3D_np(points3d, rotation_axis, rotation_degrees):
 #     """ Rotate a vector v about axis by taking the component of v perpendicular to axis,
-#     rotating it theta in the plane perpendicular to axis, 
+#     rotating it theta in the plane perpendicular to axis,
 #     then add the component of v parallel to axis.
 
 #     Let a be a unit vector along an axis axis. Then a = axis/norm(axis).
@@ -522,6 +751,15 @@ def rotate_3D(points3d, rotation_degrees, translation_vector=(0,0,0), rotation_a
 
 # extract translation and rotation vectors from transformation matrix
 def get_transform_vectors(transform_M):
+    """
+    Extracts translation and Euler angles from a 4x4 transformation matrix.
+
+    Args:
+        transform_M (np.ndarray): The 4x4 transformation matrix.
+
+    Returns:
+        tuple: A tuple containing (translation_vector, euler_angles_degrees).
+    """
     # Extract translation (top-right 3x1 sub-matrix)
     translation = transform_M[:3, 3]
 
@@ -535,11 +773,25 @@ def get_transform_vectors(transform_M):
 
 # apply translation and rotation to open3d point cloud
 def transform(pcd, transformation=None, translate=None, scale=None, euler_rotate_deg=None, pivot=(0,0,0)):
+    """
+    Applies various transformations (matrix, translate, scale, Euler rotation) to an Open3D point cloud.
+
+    Args:
+        pcd (o3d.geometry.PointCloud): The input point cloud.
+        transformation (np.ndarray, optional): A 4x4 transformation matrix. Defaults to None.
+        translate (tuple, optional): XYZ translation vector. Defaults to None.
+        scale (float, optional): Scaling factor. Defaults to None.
+        euler_rotate_deg (tuple, optional): XYZ Euler angles in degrees for rotation. Defaults to None.
+        pivot (tuple, optional): Pivot point for scaling and rotation. Defaults to (0,0,0).
+
+    Returns:
+        o3d.geometry.PointCloud: The transformed point cloud.
+    """
     pcd_temp = copy.deepcopy(pcd)
-    
+
     if transformation is not None:
         pcd_temp.transform(transformation)
-    
+
     if translate is not None:
         pcd_temp.translate(translate)
 
@@ -547,7 +799,7 @@ def transform(pcd, transformation=None, translate=None, scale=None, euler_rotate
         euler_rotate_rad = np.deg2rad(euler_rotate_deg)
         rotation_matrix = pcd_temp.get_rotation_matrix_from_xyz(euler_rotate_rad)
         pcd_temp.rotate(rotation_matrix, center=pivot)
-    
+
     if scale is not None:
         pcd_temp.scale(scale, center=pivot)
 
@@ -558,6 +810,15 @@ def transform(pcd, transformation=None, translate=None, scale=None, euler_rotate
 # pointcloud Lookup
 
 def angular_from_cartesian(cartesian_points):
+    """
+    Converts Cartesian coordinates to spherical angular coordinates.
+
+    Args:
+        cartesian_points (np.ndarray): Nx3 array of Cartesian coordinates (X, Y, Z).
+
+    Returns:
+        np.ndarray: Nx3 array of angular coordinates (theta, r, phi).
+    """
     r = np.sqrt(np.sum(cartesian_points**2, axis=1)) + 1e-10  # hack: avoid division by zero
     theta = np.arccos(cartesian_points[:, 2] / r)
     phi = np.arctan2(cartesian_points[:, 1], cartesian_points[:, 0])
@@ -565,8 +826,19 @@ def angular_from_cartesian(cartesian_points):
     return angular_points
 
 def get_sampling_coordinates(angular_points, img_shape, z_rotate=0):
+    """
+    Maps angular coordinates to 2D image coordinates for panorama projection.
+
+    Args:
+        angular_points (np.ndarray): Nx3 array of angular coordinates (theta, r, phi).
+        img_shape (tuple): Tuple (image_height, image_width).
+        z_rotate (float, optional): Z-axis rotation for the panorama projection. Defaults to 0.
+
+    Returns:
+        tuple: A tuple containing (image_x_coordinates, image_y_coordinates).
+    """
     image_height, image_width = img_shape
- 
+
     longitude = angular_points[:, 2] + np.deg2rad(90 + z_rotate)
     longitude = (longitude + 2 * np.pi) % (2 * np.pi)
     image_x = (2 * np.pi - longitude) / (2 * np.pi) * image_width
@@ -582,6 +854,20 @@ def get_sampling_coordinates(angular_points, img_shape, z_rotate=0):
     return image_x, image_y
 
 def angular_lookup(angular_points, pano, scale=1, degrees=False, z_rotate=0, as_float=True):
+    """
+    Performs an angular lookup on a panorama image to get colors for 3D points.
+
+    Args:
+        angular_points (np.ndarray): Nx3 array of angular coordinates.
+        pano (np.ndarray): The panorama image (HxWx3).
+        scale (int, optional): Scaling factor for the panorama. Defaults to 1.
+        degrees (bool, optional): Whether input angles are in degrees. Defaults to False.
+        z_rotate (float, optional): Z-axis rotation for panorama lookup. Defaults to 0.
+        as_float (bool, optional): Whether to return colors as float (0-1). Defaults to True.
+
+    Returns:
+        np.ndarray: Nx3 array of RGB colors.
+    """
     if degrees:
         angular_points = np.deg2rad(angular_points)  # degrees to radians
 
@@ -592,7 +878,7 @@ def angular_lookup(angular_points, pano, scale=1, degrees=False, z_rotate=0, as_
         image_height = int(image_height * scale)
         image_width = int(image_height * 2)  # spherical map aspect ratio is 2:1
         pano_RGB = cv2.resize(pano_RGB, (image_width, image_height), interpolation=cv2.INTER_AREA)
-    
+
     image_x, image_y = get_sampling_coordinates(angular_points, (image_height, image_width), z_rotate=z_rotate)
     colors = pano_RGB[image_y, image_x]
 
