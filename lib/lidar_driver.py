@@ -188,8 +188,7 @@ class Lidar:
 
         # Check if the package is valid using check_CRC8
         if not self.check_CRC8(self.byte_array):
-            if self.verbose:
-                print("[WARNING] Invalid package:", self.byte_array)
+            print("[WARNING] Invalid package:", self.byte_array)
             # If the package is not valid, reset byte_array and continue with the next iteration
             self.byte_array = bytearray()
             return
