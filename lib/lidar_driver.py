@@ -16,6 +16,7 @@ import asyncio
 import time
 import os
 import pickle
+import json # Import json for sending statistics
 
 # running from project root
 
@@ -25,7 +26,7 @@ from lib.platform_utils import init_serial  # init_serial_MCU, init_pwm_MCU
 
 
 class Lidar:
-    def __init__(self, config):
+    def __init__(self, config, send_stats_callback=None): # Added send_stats_callback
 
         self.verbose            = False
         self.sampling_rate      = config.get("LIDAR", config.DEVICE, "SAMPLING_RATE")
@@ -83,6 +84,8 @@ class Lidar:
         self.packets_gathered = 0
         self.packets_processed = 0
         self.points_in_buffer = 0
+        self.last_stats_send_time = time.time() # For periodic statistics sending
+        self.send_stats_callback = send_stats_callback # Callback to send stats to client
 
     def close(self):
         if hasattr(self, 'pwm') and self.pwm is not None: # Check if pwm attribute exists
@@ -102,6 +105,7 @@ class Lidar:
         self.packets_gathered = 0
         self.packets_processed = 0
         self.points_in_buffer = 0
+        self.last_stats_send_time = time.time() # Reset stats timer
 
     def start_data_collection(self):
         """Starts actual data collection (appending points to full_scan_data)."""
@@ -129,10 +133,11 @@ class Lidar:
             print("Lidar: No data collected to save.")
 
 
-    def read_loop_websocket(self, send_fn, max_packages=None):
+    def read_loop_websocket(self, send_fn, max_packages=None): # max_packages is now unused in loop condition
         loop_count = 0
 
-        while self.serial_connection.is_open and (max_packages is None or loop_count <= max_packages):
+        # Loop indefinitely as long as serial connection is open
+        while self.serial_connection.is_open:
             try:
                 # Reset self.out_i if it has reached the end of the preallocated buffer
                 if self.out_i >= self.out_len:
@@ -149,6 +154,19 @@ class Lidar:
                         current_points_batch = np.copy(self.points_3d[self.out_i*self.dlength:(self.out_i+1)*self.dlength])
                         self.full_scan_data.extend(current_points_batch.tolist())
                         self.points_in_buffer = len(self.full_scan_data) # Update points in buffer count
+
+                # Periodically send statistics
+                if time.time() - self.last_stats_send_time >= 1.0: # Send stats every 1 second
+                    stats = {
+                        "type": "stats",
+                        "packets_gathered": self.packets_gathered,
+                        "packets_processed": self.packets_processed,
+                        "points_in_buffer": self.points_in_buffer,
+                        "is_collecting": self.is_data_collection_active
+                    }
+                    if self.send_stats_callback:
+                        self.send_stats_callback(stats)
+                    self.last_stats_send_time = time.time() # Reset stats timer
 
             except serial.SerialException:
                 print("Lidar: SerialException")
@@ -188,7 +206,8 @@ class Lidar:
 
         # Check if the package is valid using check_CRC8
         if not self.check_CRC8(self.byte_array):
-            print("[WARNING] Invalid package:", self.byte_array)
+            if self.verbose:
+                print("[WARNING] Invalid package:", self.byte_array)
             # If the package is not valid, reset byte_array and continue with the next iteration
             self.byte_array = bytearray()
             return
@@ -199,17 +218,20 @@ class Lidar:
         self.decode(self.byte_array)
 
         # Convert polar to local 2D cartesian (X_local, Z_local)
+        # x_local_package: Represents the horizontal distance from the LiDAR in its own scanning plane.
+        # z_local_package: Represents the vertical distance (height/depth) from the LiDAR's scanning plane.
         x_local_package, z_local_package = self.polar2cartesian(self.angle_package, self.distance_package, self.offset)
 
-        # Convert local 2D (X_local, Z_local) to global 3D (X_global, Y_global, Z_global) using heading
+        # Convert local 2D (X_local, Z_local) to global 3D (X_global, Y_global, Z_global) using heading.
+        # The 'heading' is interpreted as a yaw rotation around the global Z-axis.
         heading_rad = np.deg2rad(self.heading)
 
-        # Assuming x_local is the horizontal distance in the lidar's plane
-        # and z_local is the vertical distance in the lidar's plane.
-        # The heading rotates this XZ plane around the global Y-axis.
+        # Global X-coordinate: Rotates the local horizontal distance (x_local_package) into the global X-axis.
         x_global_package = x_local_package * np.cos(heading_rad)
+        # Global Y-coordinate: Rotates the local horizontal distance (x_local_package) into the global Y-axis.
         y_global_package = x_local_package * np.sin(heading_rad)
-        z_global_package = z_local_package # Z remains Z as it's the vertical axis
+        # Global Z-coordinate: The vertical component remains unchanged by a yaw (heading) rotation.
+        z_global_package = z_local_package
 
         # Combine into a 4-column package: [X_global, Y_global, Z_global, Luminance]
         points_package = np.column_stack((x_global_package, y_global_package, z_global_package, self.luminance_package)).astype(self.dtype)
