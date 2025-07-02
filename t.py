@@ -65,26 +65,36 @@ async def handler(websocket, path=None):
     try:
         async for message in websocket:
             print(f"Received message: {message}")
-            try:
-                # Attempt to parse as JSON first for statistics
-                data = json.loads(message)
-                if data.get("type") == "stats_request":
-                    # If client requests stats, send current ones immediately
-                    stats = {
-                        "type": "stats",
-                        "packets_gathered": lidar.packets_gathered,
-                        "packets_processed": lidar.packets_processed,
-                        "points_in_buffer": lidar.points_in_buffer,
-                        "is_collecting": lidar.is_data_collection_active
-                    }
-                    await websocket.send(json.dumps(stats))
-                else:
-                    # If not a stats request, process as command/heading
-                    # (This part might need refinement if other JSON messages are expected)
-                    print(f"Received unexpected JSON message: {data}")
+            processed_as_json = False # Flag to track if message was handled as JSON
 
+            try:
+                data = json.loads(message)
+                if isinstance(data, dict): # Check if the parsed data is a dictionary (JSON object)
+                    if data.get("type") == "stats_request":
+                        # If client requests stats, send current ones immediately
+                        stats = {
+                            "type": "stats",
+                            "packets_gathered": lidar.packets_gathered,
+                            "packets_processed": lidar.packets_processed,
+                            "points_in_buffer": lidar.points_in_buffer,
+                            "is_collecting": lidar.is_data_collection_active
+                        }
+                        await websocket.send(json.dumps(stats))
+                        processed_as_json = True
+                    else:
+                        # If it's a dictionary but not a recognized JSON command,
+                        # it's an unexpected JSON message.
+                        print(f"Received unexpected JSON message: {data}")
+                        await websocket.send(f"Received unexpected JSON message: {data}")
+                        processed_as_json = True
+                # If 'data' is not a dict (e.g., it's an int from json.loads("90")),
+                # then 'processed_as_json' remains False, and it will be handled as a string command below.
             except json.JSONDecodeError:
-                # If not JSON, treat as a command or heading
+                # Message is not valid JSON, proceed to treat as plain string command/heading
+                pass # processed_as_json remains False
+
+            if not processed_as_json:
+                # If not processed as a specific JSON type, treat as a command or heading
                 parts = message.split()
                 command = parts[0].lower()
 
@@ -115,9 +125,9 @@ async def handler(websocket, path=None):
                     except ValueError:
                         await websocket.send("Unknown command or invalid heading format. Please send 'start', 'stop', or a whole number (0-359) for heading.")
 
-            except Exception as e:
-                print(f"Error processing message: {e}")
-                await websocket.send(f"Error processing message: {e}")
+    except Exception as e:
+        print(f"Error processing message: {e}")
+        await websocket.send(f"Error processing message: {e}")
     finally:
         clients.remove(websocket)
 
