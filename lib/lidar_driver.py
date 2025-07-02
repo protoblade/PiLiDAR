@@ -84,6 +84,7 @@ class Lidar:
         self.packets_gathered = 0
         self.packets_processed = 0
         self.points_in_buffer = 0
+
         self.last_stats_send_time = time.time() # For periodic statistics sending
         self.send_stats_callback = send_stats_callback # Callback to send stats to client
 
@@ -149,11 +150,21 @@ class Lidar:
                 # Only accumulate data if data collection is active
                 if self.is_data_collection_active:
                     # Append current lidar data (now 3D points)
+                    # Note: self.points_3d now contains only the filtered points from the last read()
                     if self.points_3d.size > 0:
-                        # Create a copy to avoid issues with points_3d being overwritten in next read
-                        current_points_batch = np.copy(self.points_3d[self.out_i*self.dlength:(self.out_i+1)*self.dlength])
-                        self.full_scan_data.extend(current_points_batch.tolist())
-                        self.points_in_buffer = len(self.full_scan_data) # Update points in buffer count
+                        # We need to get the actual number of points added in the last read()
+                        # This is tricky because points_3d is preallocated.
+                        # A better way is to pass the filtered points directly from read()
+                        # For now, we'll assume all dlength points are valid if read() was successful.
+                        # The filtering logic below in read() will ensure only valid points are processed.
+                        # So, current_points_batch should reflect the valid points from the last package.
+
+                        # The points_package from read() is what we want to add to full_scan_data
+                        # To correctly get the points from the last read, we need to return them from read()
+                        # or have read() directly update full_scan_data.
+                        # For now, let's assume points_3d is correctly updated with valid points.
+                        # The points_in_buffer will be updated by the read() method directly.
+                        pass # points_in_buffer is updated in read() now
 
                 # Periodically send statistics
                 if time.time() - self.last_stats_send_time >= 1.0: # Send stats every 1 second
@@ -222,25 +233,57 @@ class Lidar:
         # z_local_package: Represents the vertical distance (height/depth) from the LiDAR's scanning plane.
         x_local_package, z_local_package = self.polar2cartesian(self.angle_package, self.distance_package, self.offset)
 
-        # Convert local 2D (X_local, Z_local) to global 3D (X_global, Y_global, Z_global) using heading.
+        # --- Apply Angle Filter ---
+        # Convert angle_package (radians) to degrees for filtering
+        angles_degrees = np.degrees(self.angle_package)
+
+        # Create a boolean mask for points to KEEP (i.e., NOT in the forbidden ranges)
+        # Forbidden ranges: [300, 359] and [0, 60]
+        # Condition to filter out: (angle >= 300 and angle <= 359) or (angle >= 0 and angle <= 60)
+        # Condition to KEEP: NOT ((angle >= 300 and angle <= 359) or (angle >= 0 and angle <= 60))
+        keep_mask = ~((angles_degrees >= 300) | (angles_degrees <= 60))
+
+        # Apply the mask to filter out points
+        filtered_x_local = x_local_package[keep_mask]
+        filtered_z_local = z_local_package[keep_mask]
+        filtered_luminance = self.luminance_package[keep_mask]
+
+        # Convert filtered local 2D (X_local, Z_local) to global 3D (X_global, Y_global, Z_global) using heading.
         # The 'heading' is interpreted as a yaw rotation around the global Z-axis.
         heading_rad = np.deg2rad(self.heading)
 
-        # Global X-coordinate: Rotates the local horizontal distance (x_local_package) into the global X-axis.
-        x_global_package = x_local_package * np.cos(heading_rad)
-        # Global Y-coordinate: Rotates the local horizontal distance (x_local_package) into the global Y-axis.
-        y_global_package = x_local_package * np.sin(heading_rad)
+        # Global X-coordinate: Rotates the local horizontal distance (filtered_x_local) into the global X-axis.
+        x_global_package = filtered_x_local * np.cos(heading_rad)
+        # Global Y-coordinate: Rotates the local horizontal distance (filtered_x_local) into the global Y-axis.
+        y_global_package = filtered_x_local * np.sin(heading_rad)
         # Global Z-coordinate: The vertical component remains unchanged by a yaw (heading) rotation.
-        z_global_package = z_local_package
+        z_global_package = filtered_z_local
 
         # Combine into a 4-column package: [X_global, Y_global, Z_global, Luminance]
-        points_package = np.column_stack((x_global_package, y_global_package, z_global_package, self.luminance_package)).astype(self.dtype)
+        points_package = np.column_stack((x_global_package, y_global_package, z_global_package, filtered_luminance)).astype(self.dtype)
 
-        # write into preallocated output arrays at current index
-        self.speeds[self.out_i] = self.speed
-        self.timestamps[self.out_i] = self.timestamp
-        # Assign to points_3d
-        self.points_3d[self.out_i*self.dlength:(self.out_i+1)*self.dlength] = points_package
+        # If data collection is active, extend the full_scan_data with the filtered points
+        if self.is_data_collection_active:
+            self.full_scan_data.extend(points_package.tolist())
+            self.points_in_buffer = len(self.full_scan_data) # Update points in buffer count
+
+
+        # write into preallocated output arrays at current index (this part might be less relevant
+        # if points_package size varies, but we keep it for consistency with preallocation)
+        # A more robust approach might involve resizing points_3d or only using full_scan_data
+        # if the number of points per package can vary significantly after filtering.
+        # For now, we'll just assign the filtered points to the beginning of the preallocated space.
+        # This means points_3d will only contain the last filtered batch of points.
+        num_filtered_points = points_package.shape[0]
+        if num_filtered_points > 0:
+            # Ensure points_3d has enough space or handle smaller batches
+            # For simplicity, if num_filtered_points < self.dlength, the rest of the preallocated
+            # space for this package in points_3d will remain as it was or be zeroed out if desired.
+            self.points_3d[self.out_i*self.dlength : self.out_i*self.dlength + num_filtered_points] = points_package
+            # Optionally, zero out the rest of the preallocated space if num_filtered_points < self.dlength
+            if num_filtered_points < self.dlength:
+                self.points_3d[self.out_i*self.dlength + num_filtered_points : (self.out_i+1)*self.dlength] = 0
+
 
         # reset byte_array
         self.byte_array = bytearray()
