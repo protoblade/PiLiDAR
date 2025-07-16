@@ -1,17 +1,17 @@
 {
     "ENABLE_LIDAR": true,
-    "ENABLE_CAM": true,
+    "ENABLE_CAM": false,
     "ENABLE_IMU": true,
 
-    "ENABLE_PANO": true,
-    "ENABLE_3D": true,
+    "ENABLE_PANO": false,
+    "ENABLE_3D": false,
 
-    "ENABLE_VERTEXCOLOUR": true,
-    "ENABLE_FILTERING": false,
-    
+    "ENABLE_VERTEXCOLOUR": false,
+    "ENABLE_FILTERING": true,
+
     "SCANS_ROOT": "scans",
     "ANGULAR_DIGITS": 3,
-    
+
     "LIDAR": {
         "DEVICE": "STL27L",
         "STL27L": {
@@ -86,10 +86,18 @@
     },
 
     "IMU": {
-        "i2c_bus": 3, 
-        "device_address": 104,
-        "frequency": 50
-    }, 
+        "DEVICE": "BNO055",
+        "BNO055": {
+            "i2c_bus": 3,
+            "device_address": 41,
+            "frequency": 50
+        },
+        "MPU6050": {
+            "i2c_bus": 3,
+            "device_address": 104,
+            "frequency": 50
+        }
+    },
 
     "PANO": {
         "IMGCOUNT": 4,
@@ -102,7 +110,7 @@
         "Y_OFFSET": -37.5,
         "Z_OFFSET": -41.9,
         "NORMAL_RADIUS": 30,
-        "SCALE": 0.001, 
+        "SCALE": 0.001,
         "EXT": "ply",
         "ASCII": false
     },
@@ -127,7 +135,7 @@
             "density_threshold": 0.1
         }
     },
-    
+
     "REGISTRATION": {
         "GLOBAL": {
             "voxel_size": 0.05,
